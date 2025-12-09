@@ -1,0 +1,37 @@
+# Python 編譯檔案
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# 虛擬環境
+venv/
+.venv/
+ENV/
+env/
+
+# 日誌與執行記錄
+*.log
+codeExecution.log
+
+# 環境設定與機敏檔案
+.env
+*.env
+*.secrets
+
+# 系統與 IDE 檔案
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+*.iml
+
+# 其他常見忽略
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+*.prof
+*.cov
