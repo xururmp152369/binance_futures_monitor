@@ -1,7 +1,7 @@
-
+import os
 # ================== 設定 ==================
-CHAT_ID = 5746757471
-BOT_TOKEN = "8327041039:AAH3dt2gWAlJ3e82iM9AM4fHzw6C8Rej3eQ"
+CHAT_ID = os.getenv("CHAT_ID") # 746757471
+BOT_TOKEN = os.getenv("BOT_TOKEN") # 8327041039:AAH3dt2gWAlJ3e82iM9AM4fHzw6C8Rej3eQ
 EXCLUDE_SYMBOLS = {"BUSD", "USDC", "TUSD", "DAI"}
 
 # ================== 參數 ==================
