@@ -10,6 +10,143 @@ from collections import deque
 
 log = setup_logging()
 
+# ================== 歷史資料載入函數 ==================
+
+async def load_historical_klines(client, symbol, interval, limit=100, max_retries=3):
+    """載入歷史K線資料並計算EMA，包含重試機制"""
+    for retry in range(max_retries):
+        try:
+            # 獲取歷史K線
+            klines = await client.futures_klines(
+                symbol=symbol,
+                interval=interval,
+                limit=limit
+            )
+            
+            # 提取收盤價
+            closes = [float(k[4]) for k in klines]  # k[4] 是收盤價
+            
+            # 計算 EMA
+            emas = {}
+            if len(closes) >= 60:
+                closes_array = np.array(closes)
+                emas[15] = talib.EMA(closes_array, timeperiod=15)[-1]
+                emas[30] = talib.EMA(closes_array, timeperiod=30)[-1]
+                emas[45] = talib.EMA(closes_array, timeperiod=45)[-1]
+                emas[60] = talib.EMA(closes_array, timeperiod=60)[-1]
+            else:
+                emas = {15: None, 30: None, 45: None, 60: None}
+                
+            return closes, emas
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            
+            # 檢查是否為 API 限制錯誤
+            if "429" in error_msg or "rate limit" in error_msg or "too many requests" in error_msg:
+                wait_time = (retry + 1) * 5  # 遞增等待時間：5, 10, 15 秒
+                log.warning(f"API 限制觸發，等待 {wait_time} 秒後重試 ({retry + 1}/{max_retries})")
+                await asyncio.sleep(wait_time)
+                continue
+            else:
+                log.error(f"載入 {symbol} {interval} 歷史資料失敗: {e}")
+                break
+    
+    return [], {15: None, 30: None, 45: None, 60: None}
+
+async def load_historical_volume(client, symbol, limit=240, max_retries=3):
+    """載入歷史5分鐘成交量資料，包含重試機制"""
+    for retry in range(max_retries):
+        try:
+            klines = await client.futures_klines(
+                symbol=symbol,
+                interval="5m",
+                limit=limit
+            )
+            
+            # 提取成交量 (quoteVolume)
+            volumes = [float(k[7]) for k in klines]  # k[7] 是 quoteVolume
+            return volumes
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            
+            # 檢查是否為 API 限制錯誤
+            if "429" in error_msg or "rate limit" in error_msg or "too many requests" in error_msg:
+                wait_time = (retry + 1) * 5  # 遞增等待時間：5, 10, 15 秒
+                log.warning(f"API 限制觸發，等待 {wait_time} 秒後重試 ({retry + 1}/{max_retries})")
+                await asyncio.sleep(wait_time)
+                continue
+            else:
+                log.error(f"載入 {symbol} 成交量歷史資料失敗: {e}")
+                break
+    
+    return []
+
+async def load_historical_data_batch(client, symbols):
+    """批次載入歷史資料，嚴格控制 API 頻率"""
+    if not symbols:
+        return
+    
+    # 更保守的並發限制
+    hist_semaphore = asyncio.Semaphore(3)
+    
+    # 分批處理，每批最多 10 個幣種
+    batch_size = 10
+    total_batches = len(symbols) // batch_size + (1 if len(symbols) % batch_size else 0)
+    
+    log.info(f"將分 {total_batches} 批處理 {len(symbols)} 個幣種的歷史資料")
+    
+    for batch_idx in range(total_batches):
+        start_idx = batch_idx * batch_size
+        end_idx = min(start_idx + batch_size, len(symbols))
+        batch_symbols = symbols[start_idx:end_idx]
+        
+        log.info(f"處理第 {batch_idx + 1}/{total_batches} 批：{len(batch_symbols)} 個幣種")
+        
+        async def load_symbol_data(symbol):
+            async with hist_semaphore:
+                try:
+                    # 載入 1 小時 K 線
+                    closes_1h, emas_1h = await load_historical_klines(client, symbol, "1h", 100)
+                    if closes_1h:
+                        symbol_state[symbol]["kline_1h_closes"].extend(closes_1h)
+                        symbol_state[symbol]["ema_1h"] = emas_1h
+                    
+                    # API 呼叫間隔
+                    await asyncio.sleep(0.5)
+                    
+                    # 載入 4 小時 K 線
+                    closes_4h, emas_4h = await load_historical_klines(client, symbol, "4h", 100)
+                    if closes_4h:
+                        symbol_state[symbol]["kline_4h_closes"].extend(closes_4h)
+                        symbol_state[symbol]["ema_4h"] = emas_4h
+                    
+                    # API 呼叫間隔
+                    await asyncio.sleep(0.5)
+                    
+                    # 載入 5 分鐘成交量
+                    volumes = await load_historical_volume(client, symbol, 240)
+                    if volumes:
+                        symbol_state[symbol]["volume_5m"].extend(volumes)
+                    
+                    log.info(f"✅ {symbol} 歷史資料載入完成")
+                    
+                except Exception as e:
+                    log.error(f"❌ {symbol} 歷史資料載入失敗: {e}")
+                
+                # 每個幣種完成後的間隔
+                await asyncio.sleep(1.0)
+        
+        # 並發載入當前批次
+        tasks = [load_symbol_data(symbol) for symbol in batch_symbols]
+        await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # 批次間的間隔
+        if batch_idx < total_batches - 1:
+            log.info(f"第 {batch_idx + 1} 批完成，等待 3 秒後處理下一批...")
+            await asyncio.sleep(3.0)
+
 # ================== 合約幣對 初始化 ==================
 
 async def initialize_symbols(client):
@@ -24,8 +161,11 @@ async def initialize_symbols(client):
                 valid.add(s)
 
         now = time.time()
+        new_symbols = []
+        
         for s in valid:
             if s not in symbol_state:
+                # 先建立基本結構
                 symbol_state[s] = {
                     "last_price": None,
                     "last_oi": None,
@@ -38,7 +178,15 @@ async def initialize_symbols(client):
                     "kline_4h_closes": deque(maxlen=100),
                     "ema_4h": {15: None, 30: None, 45: None, 60: None},
                 }
+                new_symbols.append(s)
 
+        # 批次載入新幣種的歷史資料
+        if new_symbols:
+            log.info(f"開始載入 {len(new_symbols)} 個新幣種的歷史資料...")
+            await load_historical_data_batch(client, new_symbols)
+            log.info(f"歷史資料載入完成")
+
+        # 清理無效幣種
         for s in list(symbol_state):
             if s not in valid:
                 symbol_state.pop(s, None)
@@ -46,8 +194,8 @@ async def initialize_symbols(client):
                 oi_history.pop(s, None)
                 last_alert.pop(s, None)
 
-    except:
-        pass
+    except Exception as e:
+        log.error(f"初始化幣種失敗: {e}")
 
 # ================== 合約幣對 持倉量監控 ==================
 

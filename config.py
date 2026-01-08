@@ -1,7 +1,9 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()
 # ================== 設定 ==================
-CHAT_ID = os.getenv("CHAT_ID") # 746757471
-BOT_TOKEN = os.getenv("BOT_TOKEN") # 8327041039:AAH3dt2gWAlJ3e82iM9AM4fHzw6C8Rej3eQ
+CHAT_ID = os.getenv("CHAT_ID") 
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 EXCLUDE_SYMBOLS = {"BUSD", "USDC", "TUSD", "DAI"}
 
 # ================== 參數 ==================
