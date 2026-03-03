@@ -3,7 +3,7 @@ import models
 from command import bot_enum
 from binance import AsyncClient
 from telegram import Update
-from telegram.ext import Application, CommandHandler
+from telegram.ext import Application, CommandHandler, ContextTypes
 from config import BOT_TOKEN
 from models import running, symbol_state
 from binance_opendata import initialize_symbols, monitor_price_websocket, update_open_interest
@@ -13,6 +13,14 @@ from command import command
 
 log = setup_logging()
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    log.exception("Telegram handler exception", exc_info=context.error)
+    try:
+        if isinstance(update, Update) and update.effective_message:
+            await update.effective_message.reply_text("發生錯誤，請稍後再試。")
+    except Exception:
+        pass
+
 async def main():
     global running, bot
 
@@ -20,6 +28,7 @@ async def main():
 
     # 建立 Application
     application = Application.builder().token(BOT_TOKEN).build()
+    application.add_error_handler(error_handler)
     models.bot = application.bot
     # 註冊指令（用你自己的 enum）
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.COMMAND, command.command))

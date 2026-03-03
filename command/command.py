@@ -5,6 +5,7 @@ from telegram.ext import (
 from models import symbol_state, price_history
 from conditions import check_conditions_manual
 from binance import AsyncClient
+from utils import reply_text_long
 
 async def command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -41,7 +42,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # 價格歷史
         if price_hist:
-            symbol_info.append(f"\nsymbol_state：{symbol_state[symbol]}\n📈 價格歷史：")
+            # symbol_info.append(f"\nsymbol_state：{symbol_state[symbol]}\n📈 價格歷史：")
             for i, (timestamp, price) in enumerate(price_hist, 1):
                 from datetime import datetime
                 time_str = datetime.fromtimestamp(timestamp).strftime('%H:%M:%S')
@@ -49,7 +50,7 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # 每個幣種單獨發送一條訊息
         symbol_message = "\n".join(symbol_info)
-        await update.message.reply_text(symbol_message)
+        await reply_text_long(update.message, symbol_message)
 
 # /c 指令主處理器
 async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -79,7 +80,7 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log_message = f"{symbol} 條件檢查結果：\n\n" + "\n".join(logs)
             
             # 發送日誌
-            await update.message.reply_text(log_message)
+            await reply_text_long(update.message, log_message)
             
             # 如果有結果，發送告警訊息
             if result:
@@ -89,7 +90,7 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 alert_message += f"持倉量變化：{result['oi_pct'] or 0:+.2f}%\n\n"
                 alert_message += result['reason'][0]
                 
-                await update.message.reply_text(alert_message)
+                await reply_text_long(update.message, alert_message)
                 
     except Exception as e:
         await update.message.reply_text(f"檢查過程發生錯誤：{str(e)}")
