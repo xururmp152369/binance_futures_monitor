@@ -1,15 +1,15 @@
 import asyncio
-import models
-from command import bot_enum
+from .setting import models
+from .command import bot_enum
 from binance import AsyncClient
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from config import BOT_TOKEN
-from models import running, symbol_state
-from binance_opendata import initialize_symbols, monitor_price_websocket, update_open_interest
-from monitor import periodic_screen
-from utils import setup_logging
-from command import command
+from .setting.config import BOT_TOKEN
+from .setting.models import running, symbol_state
+from .datacenter.binance_opendata import initialize_symbols, monitor_price_websocket, update_open_interest
+from .tgbot.monitor import periodic_screen
+from .extension.utils import setup_logging
+from .command import command
 
 log = setup_logging()
 

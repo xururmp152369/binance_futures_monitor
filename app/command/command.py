@@ -2,10 +2,10 @@ from telegram import Update
 from telegram.ext import (
     ContextTypes,
 )
-from models import symbol_state, price_history
-from conditions import check_conditions_manual
+from ..setting.models import symbol_state, price_history
+from ..tgbot.conditions import check_conditions_manual
 from binance import AsyncClient
-from utils import reply_text_long
+from ..extension.utils import reply_text_long
 
 async def command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user

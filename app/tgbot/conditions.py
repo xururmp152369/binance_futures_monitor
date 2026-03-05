@@ -1,8 +1,8 @@
 import time
 import asyncio
 from binance import Client
-from config import OI_THRESHOLD, PRICE_THRESHOLD, VOLUME_THRESHOLD
-from models import symbol_state, oi_history, price_history
+from ..setting.config import OI_THRESHOLD, PRICE_THRESHOLD, VOLUME_THRESHOLD
+from ..setting.models import symbol_state, oi_history, price_history
 
 async def check_oi_condition(symbol, now):
     # 確認歷史資料是否足夠

@@ -3,9 +3,9 @@ import time
 import talib
 import numpy as np
 from binance import BinanceSocketManager
-from config import EXCLUDE_SYMBOLS, BATCH_SIZE, RESTART_INTERVAL, QUOTE_VOLUME
-from models import symbol_state, semaphore, running, price_history, oi_history, last_alert
-from utils import setup_logging
+from ..setting.config import EXCLUDE_SYMBOLS, BATCH_SIZE, RESTART_INTERVAL, QUOTE_VOLUME
+from ..setting.models import symbol_state, semaphore, running, price_history, oi_history, last_alert
+from ..extension.utils import setup_logging
 from collections import deque
 
 log = setup_logging()

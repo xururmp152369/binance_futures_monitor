@@ -1,9 +1,9 @@
 import time
-import models
+from ..setting import models
 from datetime import datetime
-from config import CHAT_ID, ALERT_COOLDOWN
-from models import symbol_state, last_alert
-from utils import setup_logging
+from ..setting.config import CHAT_ID, ALERT_COOLDOWN
+from ..setting.models import symbol_state, last_alert
+from ..extension.utils import setup_logging
 
 log = setup_logging()
 

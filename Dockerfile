@@ -33,4 +33,4 @@ USER appuser
 
 COPY --chown=appuser:appuser . .
 
-CMD ["python", "main.py"]
+CMD ["python", "-m", "app.main"]

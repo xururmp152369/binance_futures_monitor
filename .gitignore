@@ -13,6 +13,7 @@ env/
 # 日誌與執行記錄
 *.log
 codeExecution.log
+_codeExecution.log
 
 # 環境設定與機敏檔案
 .env
