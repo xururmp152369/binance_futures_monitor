@@ -239,6 +239,9 @@ async def handle_price_websocket(client, batch_symbols):
         streams.append(f"{s}@kline_4h") # 4小K棒
     try:
         async with bm.futures_multiplex_socket(streams) as stream:
+            last_stream_name = None
+            last_symbol = None
+            last_interval = None
             while running:
                 try:
                     msg = await stream.recv()
@@ -246,10 +249,12 @@ async def handle_price_websocket(client, batch_symbols):
                         continue
 
                     stream_name = msg["stream"]
+                    last_stream_name = stream_name
                     data = msg["data"]
 
                     if stream_name.endswith("@markPrice"):
                         sym = data["s"].upper()
+                        last_symbol = sym
                         if sym not in symbol_state:
                             continue
 
@@ -267,6 +272,8 @@ async def handle_price_websocket(client, batch_symbols):
                     elif stream_name.endswith("@kline_5m"):
                         k = data["k"]
                         sym = k["s"]
+                        last_symbol = sym
+                        last_interval = k.get("i")
                         if sym not in symbol_state:
                             continue
 
@@ -288,6 +295,8 @@ async def handle_price_websocket(client, batch_symbols):
                         k = data["k"]
                         sym = k["s"]
                         interval = k["i"]
+                        last_symbol = sym
+                        last_interval = interval
                         if sym not in symbol_state: continue
                         if not k["x"]: continue  # 只處理收盤
 
@@ -309,10 +318,12 @@ async def handle_price_websocket(client, batch_symbols):
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
-                    log.error(f"接收錯誤: {e}")
+                    log.exception(
+                        f"接收錯誤: {e} | last_stream={last_stream_name} last_symbol={last_symbol} last_interval={last_interval}"
+                    )
                     break
     except Exception as e:
-        log.error(f"Price WebSocket 連線失敗: {e}")
+        log.exception(f"Price WebSocket 連線失敗: {e} | batch_symbols={batch_symbols}")
 
 async def monitor_price_websocket(client):
     log.info("啟動 Price WebSocket 監控...")
@@ -339,9 +350,22 @@ async def monitor_price_websocket(client):
             log.info("♻️ 開始重啟所有 Price WebSocket 連線...")
             for t in tasks:
                 t.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            results = None
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True),
+                    timeout=60,
+                )
+            except asyncio.TimeoutError:
+                pending_count = sum(1 for t in tasks if not t.done())
+                log.error(f"⚠️ Price WebSocket 重啟等待逾時，仍有 {pending_count}/{len(tasks)} 個批次未結束，將直接進入下一輪重啟")
+
+            if results is not None:
+                for r in results:
+                    if isinstance(r, Exception) and not isinstance(r, asyncio.CancelledError):
+                        log.exception(f"Price WebSocket 批次結束時回傳例外: {r}")
             log.info("🔄 所有批次已結束，準備重新啟動...")
 
         except Exception as e:
-            log.error(f"Price WebSocket 總錯誤: {e}")
+            log.exception(f"Price WebSocket 總錯誤: {e}")
             await asyncio.sleep(10)

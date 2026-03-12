@@ -1,7 +1,8 @@
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    TZ=Asia/Taipei
 
 WORKDIR /app
 
@@ -10,7 +11,11 @@ RUN apt-get update \
     build-essential \
     wget \
     ca-certificates \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
+
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone
 
 # Install TA-Lib C library (required by Python package TA-Lib)
 RUN wget -q https://sourceforge.net/projects/ta-lib/files/ta-lib/0.4.0/ta-lib-0.4.0-src.tar.gz \

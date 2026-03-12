@@ -1,0 +1,7 @@
+services:
+  binance-futures-monitor:
+    build: .
+    container_name: binance-futures-monitor
+    env_file:
+      - .env
+    restart: unless-stopped
