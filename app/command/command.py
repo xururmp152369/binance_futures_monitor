@@ -8,6 +8,7 @@ from binance import AsyncClient
 from ..extension.utils import reply_text_long
 
 async def command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/command 指令：回覆可用指令說明。"""
     user = update.effective_user
 
     await update.message.reply_text(
@@ -18,8 +19,11 @@ async def command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "試試看吧！"
     )
 
-# /s 指令主處理器
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/s 指令：輸出指定幣種的價格歷史快照。
+
+    使用 `price_history[symbol]` 的資料逐筆列出時間與價格，方便你確認資料是否持續更新。
+    """
     args = context.args  # 這就是使用者在指令後面打的所有文字（已自動分割）
 
     if not args:
@@ -52,8 +56,11 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         symbol_message = "\n".join(symbol_info)
         await reply_text_long(update.message, symbol_message)
 
-# /c 指令主處理器
 async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/c 指令：手動檢查指定幣對是否會觸發告警，並回傳詳細日誌。
+
+    會呼叫 `check_conditions_manual()`，把每個計算步驟的數值透過 Telegram 回傳。
+    """
     args = context.args
 
     if not args:

@@ -3,6 +3,11 @@ import os
 
 
 def _split_text(text: str, max_len: int):
+    """把長文字依最大長度切成多段。
+
+    主要用於 Telegram 訊息長度限制（單則訊息不可太長）。
+    會以「行」為優先切割，必要時才會硬切字串。
+    """
     if text is None:
         return [""]
     if len(text) <= max_len:
@@ -31,12 +36,21 @@ def _split_text(text: str, max_len: int):
 
 
 async def reply_text_long(message, text: str, *, max_len: int = 3500, **kwargs):
+    """安全回覆 Telegram 長訊息。
+
+    會先把文字切塊後逐段送出，避免 `BadRequest: Message is too long`。
+    """
     for chunk in _split_text(text, max_len=max_len):
         await message.reply_text(chunk, **kwargs)
 
 
 # ================== LOG 設定：同時輸出到控制台 + 檔案 ==================
 def setup_logging():
+    """建立並回傳專案共用 logger。
+
+    預設輸出到 stdout（Docker 可用 `docker logs` 查看）。
+    若環境變數 `LOG_TO_FILE=1`，則另外寫入 `_codeExecution.log`。
+    """
     log_to_file = os.getenv("LOG_TO_FILE", "0").strip().lower() in {"1", "true", "yes", "y"}
 
     handlers = [logging.StreamHandler()]

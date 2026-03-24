@@ -10,10 +10,40 @@ from collections import deque
 
 log = setup_logging()
 
+def _is_rate_limit_error(error_msg: str) -> bool:
+    """判斷錯誤訊息是否屬於 Binance API rate limit 類型。"""
+    if not error_msg:
+        return False
+    msg = error_msg.lower()
+    return "429" in msg or "rate limit" in msg or "too many requests" in msg
+
+
+async def _sleep_rate_limit_backoff(retry: int, max_retries: int):
+    """依重試次數做退避等待，用於 rate limit 情境。"""
+    wait_time = (retry + 1) * 5
+    log.warning(f"API 限制觸發，等待 {wait_time} 秒後重試 ({retry + 1}/{max_retries})")
+    await asyncio.sleep(wait_time)
+
 # ================== 歷史資料載入函數 ==================
 
 async def load_historical_klines(client, symbol, interval, limit=100, max_retries=3):
-    """載入歷史K線資料並計算EMA，包含重試機制"""
+    """載入指定週期的歷史 K 線收盤價並計算 EMA。
+
+    主要用於初始化新幣種時，補足 1h/4h close 序列與 EMA(15/30/45/60)。
+    內含簡易重試與 API rate limit 的退避等待。
+
+    Args:
+        client: Binance AsyncClient
+        symbol: 合約幣種（例如 BTCUSDT）
+        interval: K 線週期（例如 "1h" / "4h"）
+        limit: 取得 K 線數量
+        max_retries: 最多重試次數
+
+    Returns:
+        (closes, emas):
+            closes: list[float] 的收盤價
+            emas: dict，包含 {15,30,45,60} 四條 EMA 的最後一個值（資料不足則為 None）
+    """
     for retry in range(max_retries):
         try:
             # 獲取歷史K線
@@ -43,10 +73,8 @@ async def load_historical_klines(client, symbol, interval, limit=100, max_retrie
             error_msg = str(e).lower()
             
             # 檢查是否為 API 限制錯誤
-            if "429" in error_msg or "rate limit" in error_msg or "too many requests" in error_msg:
-                wait_time = (retry + 1) * 5  # 遞增等待時間：5, 10, 15 秒
-                log.warning(f"API 限制觸發，等待 {wait_time} 秒後重試 ({retry + 1}/{max_retries})")
-                await asyncio.sleep(wait_time)
+            if _is_rate_limit_error(error_msg):
+                await _sleep_rate_limit_backoff(retry, max_retries)
                 continue
             else:
                 log.error(f"載入 {symbol} {interval} 歷史資料失敗: {e}")
@@ -54,37 +82,81 @@ async def load_historical_klines(client, symbol, interval, limit=100, max_retrie
     
     return [], {15: None, 30: None, 45: None, 60: None}
 
-async def load_historical_volume(client, symbol, limit=240, max_retries=3):
-    """載入歷史5分鐘成交量資料，包含重試機制"""
-    for retry in range(max_retries):
-        try:
-            klines = await client.futures_klines(
-                symbol=symbol,
-                interval="5m",
-                limit=limit
-            )
-            
-            # 提取成交量 (quoteVolume)
-            volumes = [float(k[7]) for k in klines]  # k[7] 是 quoteVolume
-            return volumes
-            
-        except Exception as e:
-            error_msg = str(e).lower()
-            
-            # 檢查是否為 API 限制錯誤
-            if "429" in error_msg or "rate limit" in error_msg or "too many requests" in error_msg:
-                wait_time = (retry + 1) * 5  # 遞增等待時間：5, 10, 15 秒
-                log.warning(f"API 限制觸發，等待 {wait_time} 秒後重試 ({retry + 1}/{max_retries})")
-                await asyncio.sleep(wait_time)
-                continue
-            else:
-                log.error(f"載入 {symbol} 成交量歷史資料失敗: {e}")
+async def load_historical_volume(client, symbol, limit=2895, max_retries=3):
+    """載入歷史1分鐘成交量資料，包含重試機制。
+
+    注意：Binance `futures_klines` 的單次 `limit` 有上限（常見為 1500），
+    因此需要用 endTime 分頁往前抓取，拼出最近的 48h+15m。
+
+    Args:
+        client: Binance AsyncClient
+        symbol: 合約幣種（例如 BTCUSDT）
+        limit: 需要的 1m 根數（例如 48h+15m = 2895）
+        max_retries: 每一頁最多重試次數
+
+    Returns:
+        list[float]: 依時間由舊到新排列的 quoteVolume(USDT) 序列。
+        可能少於 limit（例如幣種上市時間較短或 API 回傳不足）。
+    """
+    max_limit_per_request = 1500
+    need = int(limit)
+    if need <= 0:
+        return []
+
+    volumes = []
+    end_time_ms = int(time.time() * 1000)
+
+    while need > 0:
+        req_limit = min(max_limit_per_request, need)
+        for retry in range(max_retries):
+            try:
+                klines = await client.futures_klines(
+                    symbol=symbol,
+                    interval="1m",
+                    limit=req_limit,
+                    endTime=end_time_ms,
+                )
+
+                if not klines:
+                    return volumes
+
+                # klines: [ [open_time, o, h, l, c, v, close_time, quoteVol, ...], ... ]
+                # 依時間由舊到新，這裡要把更舊的一段塞到最前面
+                chunk = [float(k[7]) for k in klines]
+                volumes = chunk + volumes
+
+                need -= len(klines)
+                first_open_time = int(klines[0][0])
+                end_time_ms = first_open_time - 1
                 break
-    
-    return []
+
+            except Exception as e:
+                error_msg = str(e).lower()
+
+                if _is_rate_limit_error(error_msg):
+                    await _sleep_rate_limit_backoff(retry, max_retries)
+                    continue
+
+                log.error(f"載入 {symbol} 成交量歷史資料失敗: {e}")
+                return volumes
+        else:
+            return volumes
+
+    return volumes
 
 async def load_historical_data_batch(client, symbols):
-    """批次載入歷史資料，嚴格控制 API 頻率"""
+    """批次載入新幣種的歷史資料。
+
+    會依序載入：
+    - 1h close + EMA
+    - 4h close + EMA
+    - 1m quoteVolume（用於 15m 成交量 vs 48h baseline）
+
+    為避免觸發 API 限制，內部使用 `hist_semaphore` 控制並發，並在每個 API 呼叫後 sleep。
+
+    Side effects:
+        會直接填充 `symbol_state[symbol]` 內的 deque（kline_*_closes / volume_1m）與 ema_*。
+    """
     if not symbols:
         return
     
@@ -125,10 +197,10 @@ async def load_historical_data_batch(client, symbols):
                     # API 呼叫間隔
                     await asyncio.sleep(0.5)
                     
-                    # 載入 5 分鐘成交量
-                    volumes = await load_historical_volume(client, symbol, 240)
+                    # 載入 1 分鐘成交量
+                    volumes = await load_historical_volume(client, symbol, 2895)
                     if volumes:
-                        symbol_state[symbol]["volume_5m"].extend(volumes)
+                        symbol_state[symbol]["volume_1m"].extend(volumes)
                     
                     log.info(f"✅ {symbol} 歷史資料載入完成")
                     
@@ -150,6 +222,14 @@ async def load_historical_data_batch(client, symbols):
 # ================== 合約幣對 初始化 ==================
 
 async def initialize_symbols(client):
+    """初始化/更新監控幣種清單，並為新幣種建立 symbol_state 結構。
+
+    流程：
+    1) 透過 futures_ticker 篩選出符合：USDT 合約、QUOTE_VOLUME、且不在 EXCLUDE_SYMBOLS 的幣種
+    2) 對新幣種建立 `symbol_state[s]` 的基礎欄位（價格/OI/成交量/EMA 容器）
+    3) 對新幣種批次載入歷史資料（避免一開始資料不足）
+    4) 清理已不符合條件的幣種（包含 history 與 cooldown state）
+    """
     try:
         ticker24 = await client.futures_ticker()
         valid = set()
@@ -171,8 +251,8 @@ async def initialize_symbols(client):
                     "last_oi": None,
                     "funding_rate": 0.0,
                     "monitor_start": now - 120,
-                    "volume_5m": deque(maxlen=240),
-                    "last_kline_close_time": 0,  # 避免重複處理同一根
+                    "volume_1m": deque(maxlen=2895),
+                    "last_kline_close_time_1m": 0,  # 避免重複處理同一根
                     "kline_1h_closes": deque(maxlen=100),
                     "ema_1h": {15: None, 30: None, 45: None, 60: None},
                     "kline_4h_closes": deque(maxlen=100),
@@ -200,6 +280,11 @@ async def initialize_symbols(client):
 # ================== 合約幣對 持倉量監控 ==================
 
 async def update_open_interest(client):
+    """週期性更新所有監控幣種的持倉量（Open Interest）。
+
+    - 會分批（每批 50）併發呼叫 `fetch_oi`
+    - 每輪完成後 sleep 60 秒
+    """
     while running:
         symbols = list(symbol_state.keys())
         if not symbols:
@@ -214,6 +299,12 @@ async def update_open_interest(client):
         await asyncio.sleep(60)
 
 async def fetch_oi(client, sym):
+    """抓取單一幣種的 Open Interest 並更新到 state 與 history。
+
+    Side effects:
+        - `symbol_state[sym]["last_oi"]` 會被更新
+        - `oi_history[sym]` 會以節流方式 append (timestamp, oi)
+    """
     async with semaphore:
         data = await client.futures_open_interest(symbol=sym)
         oi = float(data["openInterest"])
@@ -228,13 +319,22 @@ async def fetch_oi(client, sym):
 # ================== 合約幣對 價格K棒監控 ==================
 
 async def handle_price_websocket(client, batch_symbols):
+    """建立並維持一個 WebSocket multiplex 連線，接收一批 symbols 的即時資料。
+
+    訂閱 stream：
+    - markPrice：更新最新價格、資金費率、並寫入 price_history
+    - kline_1m：K 線收盤後寫入 volume_1m（用於 15m 成交量判斷）
+    - kline_1h / kline_4h：K 線收盤後更新 close deque 並計算 EMA
+
+    發生接收例外時會記錄最後一筆 stream/symbol/interval，方便排查。
+    """
     bm = BinanceSocketManager(client, user_timeout=60)
     # 同時訂閱 markPrice + kline_1m
     streams = []
     for sym in batch_symbols:
         s = sym.lower()
         streams.append(f"{s}@markPrice") # 價格
-        streams.append(f"{s}@kline_5m") # 5分K棒
+        streams.append(f"{s}@kline_1m") # 1分K棒
         streams.append(f"{s}@kline_1h") # 1小K棒
         streams.append(f"{s}@kline_4h") # 4小K棒
     try:
@@ -268,8 +368,8 @@ async def handle_price_websocket(client, batch_symbols):
                         hist = price_history[sym]
                         if not hist or now - hist[-1][0] >= 10:
                             hist.append((now, price))
-                        # === 處理 5m K線（成交量）===
-                    elif stream_name.endswith("@kline_5m"):
+                        # === 處理 1m K線（成交量）===
+                    elif stream_name.endswith("@kline_1m"):
                         k = data["k"]
                         sym = k["s"]
                         last_symbol = sym
@@ -285,12 +385,12 @@ async def handle_price_websocket(client, batch_symbols):
                         state = symbol_state[sym]
 
                         # 避免重複處理同一根K（Binance 會重發）
-                        if close_time <= state["last_kline_close_time"]:
+                        if close_time <= state["last_kline_close_time_1m"]:
                             continue
 
                         quote_vol = float(k["q"])  # quoteVolume（USDT量）
-                        state["volume_5m"].append(quote_vol)
-                        state["last_kline_close_time"] = close_time
+                        state["volume_1m"].append(quote_vol)
+                        state["last_kline_close_time_1m"] = close_time
                     elif stream_name.endswith("@kline_4h") or stream_name.endswith("@kline_1h"):
                         k = data["k"]
                         sym = k["s"]
@@ -326,6 +426,15 @@ async def handle_price_websocket(client, batch_symbols):
         log.exception(f"Price WebSocket 連線失敗: {e} | batch_symbols={batch_symbols}")
 
 async def monitor_price_websocket(client):
+    """啟動並監控所有 symbols 的 WebSocket 任務，並依固定週期重啟。
+
+    目的：避免 Docker/網路環境下 WebSocket 長時間執行造成卡死或半斷線。
+
+    行為：
+    - 依 `BATCH_SIZE` 分批啟動多個 `handle_price_websocket` task
+    - 每 `RESTART_INTERVAL` 秒 cancel 這些 task，並等待最多 60 秒收尾
+    - 若收尾逾時，記錄 log 後直接進入下一輪重啟
+    """
     log.info("啟動 Price WebSocket 監控...")
     while running:
         try:

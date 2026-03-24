@@ -13,9 +13,9 @@
 必要條件（全部需符合）：
 
 1. 24 小時成交量（以報價貨幣計）大於 QUOTE_VOLUME
-2. 最近 1 小時成交量 > 最近 48 小時平均成交量 × VOLUME_THRESHOLD
+2. 最近 15 分鐘成交量（由 1 分鐘 K 線累計） > 過去 48 小時的「平均 15 分鐘成交量」× VOLUME_THRESHOLD
 3. 只擷取上漲幣種，且 15 分鐘內漲幅超過 PRICE_THRESHOLD (%)
-4. 1 小時呈現多頭趨勢（由程式內的趨勢判斷邏輯決定）
+4. （若程式啟用趨勢判斷）需符合趨勢條件（由程式內的趨勢判斷邏輯決定）
 
 可選的監聽項目（依 config 設定是否啟用）：
 
@@ -25,7 +25,7 @@
 ## 常見設定參數（位於 config.py）
 
 - QUOTE_VOLUME: 24 小時成交量最低門檻（以報價貨幣計，例：USDT）
-- VOLUME_THRESHOLD: 判斷 1 小時成交量是否顯著高於過去 48 小時平均的倍數（例如 2.0 表示 2 倍）
+- VOLUME_THRESHOLD: 判斷「最近 15 分鐘成交量」是否顯著高於「過去 48 小時平均 15 分鐘成交量」的倍數（例如 2.0 表示 2 倍）
 - PRICE_THRESHOLD: 15 分鐘內的價格漲幅百分比門檻（例如 1.5 表示 1.5%）
 - OI_THRESHOLD: 1 小時內持倉量增幅百分比（可選）
 
@@ -67,3 +67,55 @@ venv\Scripts\activate
 # 或使用:
 venv\Scripts\activate
 ```
+
+## 使用 Docker / Docker Compose
+
+此專案已提供 `Dockerfile` 與 `docker-compose.yml`，可用 Docker 方式常駐執行。
+
+### 1) 準備環境變數（.env）
+
+請在專案根目錄建立 `.env`，至少包含：
+
+```env
+BOT_TOKEN=你的_telegram_bot_token
+CHAT_ID=你的_chat_id
+```
+
+（其餘策略參數請至 `app/setting/config.py` 調整）
+
+### 2) 常用指令
+
+- Build 映像檔：
+
+```powershell
+docker compose build
+```
+
+- 背景啟動：
+
+```powershell
+docker compose up -d
+```
+
+- 查看 logs：
+
+```powershell
+docker compose logs -f --tail=200
+```
+
+- 重新啟動服務：
+
+```powershell
+docker compose restart
+```
+
+- 停止並移除容器：
+
+```powershell
+docker compose down
+```
+
+### 3) 補充說明
+
+- 容器啟動指令為：`python -m app.main`
+- Compose 服務使用 `restart: unless-stopped`，適合長時間監控

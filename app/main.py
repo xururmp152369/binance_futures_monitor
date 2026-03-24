@@ -14,6 +14,12 @@ from .command import command
 log = setup_logging()
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Telegram 全域錯誤處理器。
+
+    任何 CommandHandler 發生未捕捉例外時會進到這裡：
+    - 會把完整 traceback 記到 log
+    - 若可回覆使用者，則回覆一則簡短錯誤訊息
+    """
     log.exception("Telegram handler exception", exc_info=context.error)
     try:
         if isinstance(update, Update) and update.effective_message:
@@ -22,6 +28,18 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         pass
 
 async def main():
+    """程式主入口。
+
+    主要流程：
+    1) 初始化 Telegram Bot（註冊指令與 error handler）
+    2) 建立 Binance AsyncClient
+    3) 初始化監控幣種（建立 symbol_state 結構、載入歷史資料）
+    4) 啟動三個背景任務：
+       - monitor_price_websocket：WebSocket 即時更新價格/成交量/EMA
+       - update_open_interest：REST 週期更新 OI
+       - periodic_screen：週期掃描條件並發告警
+    5) 啟動 Telegram polling 讓使用者可下指令
+    """
     global running, bot
 
     log.info("啟動 Binance 異動監控 Bot...")
@@ -87,4 +105,5 @@ async def main():
         log.info("所有服務已安全關閉，掰掰")
 
 if __name__ == "__main__":
+    """直接執行此模組時，啟動 asyncio event loop 跑 main()。"""
     asyncio.run(main())

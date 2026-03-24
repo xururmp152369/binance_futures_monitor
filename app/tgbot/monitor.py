@@ -12,6 +12,14 @@ log = setup_logging()
 # ================== 監控條件邏輯 ==================
 
 async def screen_and_alert(client):
+    """掃描所有符合監控條件的幣種並發送告警。
+
+    流程：
+    1) 透過 futures_ticker 篩出符合 QUOTE_VOLUME / EXCLUDE_SYMBOLS 的合約
+    2) 過濾出本地已初始化且資料齊全（price/oi）的幣種
+    3) 併發執行 check_conditions
+    4) 對回傳有結果者呼叫 send_alert
+    """
     try:
         ticker24 = await client.futures_ticker()
         valid_symbols = [
@@ -47,6 +55,11 @@ async def screen_and_alert(client):
         log.info(f"[篩選錯誤] {e}")
 
 async def periodic_screen(client):
+    """週期性執行 initialize_symbols + screen_and_alert。
+
+    - initialize_symbols：動態更新監控清單並載入新幣種歷史資料
+    - screen_and_alert：判斷是否觸發告警
+    """
     while running:
         await initialize_symbols(client)
         await screen_and_alert(client)

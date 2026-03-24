@@ -10,10 +10,22 @@ log = setup_logging()
 # ================== Telegram Bot ==================
 
 async def send_alert(symbol: str, alert_data: dict):
+    """發送告警訊息到指定 Telegram 聊天室。
+
+    會先做 `ALERT_COOLDOWN` 冷卻檢查，避免同一幣種短時間內重複洗版。
+
+    Args:
+        symbol: 幣種（例如 BTCUSDT）
+        alert_data: 由 conditions.py 組出的告警資料（包含 reason/price_pct/oi_pct）
+
+    Returns:
+        1 表示成功送出；0 表示送出失敗；None 表示被 cooldown 擋下。
+    """
     try:
         now = time.time()
         if now - last_alert[symbol] < ALERT_COOLDOWN:
             return
+
         last_alert[symbol] = now
 
         state = symbol_state[symbol]
@@ -23,7 +35,7 @@ async def send_alert(symbol: str, alert_data: dict):
         reason = alert_data["reason"]
         current_time = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
 
-        title = f"🚨 {symbol} 異動警報！ ⌚ 觸發時間：{current_time}"
+        title = f"🚨 {symbol}.P 異動警報！ ⌚ 觸發時間：{current_time}"
         price_line = f"💰 價格：`{price:,.8f}` USDT"
         trigger_line = ""
         if alert_data.get("price_pct") is not None:
