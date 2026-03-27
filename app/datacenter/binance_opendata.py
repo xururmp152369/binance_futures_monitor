@@ -82,16 +82,16 @@ async def load_historical_klines(client, symbol, interval, limit=100, max_retrie
     
     return [], {15: None, 30: None, 45: None, 60: None}
 
-async def load_historical_volume(client, symbol, limit=2895, max_retries=3):
-    """載入歷史1分鐘成交量資料，包含重試機制。
+async def load_historical_volume(client, symbol, limit=192, max_retries=3):
+    """載入歷史15分鐘成交量資料，包含重試機制。
 
     注意：Binance `futures_klines` 的單次 `limit` 有上限（常見為 1500），
-    因此需要用 endTime 分頁往前抓取，拼出最近的 48h+15m。
+    因此需要用 endTime 分頁往前抓取，拼出最近的 48h（192 根 15m K）。
 
     Args:
         client: Binance AsyncClient
         symbol: 合約幣種（例如 BTCUSDT）
-        limit: 需要的 1m 根數（例如 48h+15m = 2895）
+        limit: 需要的 15m 根數（例如 48h = 192）
         max_retries: 每一頁最多重試次數
 
     Returns:
@@ -112,7 +112,7 @@ async def load_historical_volume(client, symbol, limit=2895, max_retries=3):
             try:
                 klines = await client.futures_klines(
                     symbol=symbol,
-                    interval="1m",
+                    interval="15m",
                     limit=req_limit,
                     endTime=end_time_ms,
                 )
@@ -150,12 +150,12 @@ async def load_historical_data_batch(client, symbols):
     會依序載入：
     - 1h close + EMA
     - 4h close + EMA
-    - 1m quoteVolume（用於 15m 成交量 vs 48h baseline）
+    - 15m quoteVolume（用於成交量 vs 48h baseline）
 
     為避免觸發 API 限制，內部使用 `hist_semaphore` 控制並發，並在每個 API 呼叫後 sleep。
 
     Side effects:
-        會直接填充 `symbol_state[symbol]` 內的 deque（kline_*_closes / volume_1m）與 ema_*。
+        會直接填充 `symbol_state[symbol]` 內的 deque（kline_*_closes / volume_15m）與 ema_*。
     """
     if not symbols:
         return
@@ -197,10 +197,10 @@ async def load_historical_data_batch(client, symbols):
                     # API 呼叫間隔
                     await asyncio.sleep(0.5)
                     
-                    # 載入 1 分鐘成交量
-                    volumes = await load_historical_volume(client, symbol, 2895)
+                    # 載入 15 分鐘成交量
+                    volumes = await load_historical_volume(client, symbol, 192)
                     if volumes:
-                        symbol_state[symbol]["volume_1m"].extend(volumes)
+                        symbol_state[symbol]["volume_15m"].extend(volumes)
                     
                     log.info(f"✅ {symbol} 歷史資料載入完成")
                     
@@ -251,8 +251,9 @@ async def initialize_symbols(client):
                     "last_oi": None,
                     "funding_rate": 0.0,
                     "monitor_start": now - 120,
-                    "volume_1m": deque(maxlen=2895),
-                    "last_kline_close_time_1m": 0,  # 避免重複處理同一根
+                    "volume_15m": deque(maxlen=192),  # 48h = 192 根 15m K
+                    "last_kline_close_time_15m": 0,  # 避免重複處理同一根
+                    "new_15m_kline": False,  # 標記是否有新 15m K 收盤
                     "kline_1h_closes": deque(maxlen=100),
                     "ema_1h": {15: None, 30: None, 45: None, 60: None},
                     "kline_4h_closes": deque(maxlen=100),
@@ -323,18 +324,18 @@ async def handle_price_websocket(client, batch_symbols):
 
     訂閱 stream：
     - markPrice：更新最新價格、資金費率、並寫入 price_history
-    - kline_1m：K 線收盤後寫入 volume_1m（用於 15m 成交量判斷）
+    - kline_15m：K 線收盤後寫入 volume_15m 並設定 new_15m_kline flag
     - kline_1h / kline_4h：K 線收盤後更新 close deque 並計算 EMA
 
     發生接收例外時會記錄最後一筆 stream/symbol/interval，方便排查。
     """
     bm = BinanceSocketManager(client, user_timeout=60)
-    # 同時訂閱 markPrice + kline_1m
+    # 同時訂閱 markPrice + kline_15m + kline_1h/4h
     streams = []
     for sym in batch_symbols:
         s = sym.lower()
         streams.append(f"{s}@markPrice") # 價格
-        streams.append(f"{s}@kline_1m") # 1分K棒
+        streams.append(f"{s}@kline_15m") # 15分K棒
         streams.append(f"{s}@kline_1h") # 1小K棒
         streams.append(f"{s}@kline_4h") # 4小K棒
     try:
@@ -368,8 +369,8 @@ async def handle_price_websocket(client, batch_symbols):
                         hist = price_history[sym]
                         if not hist or now - hist[-1][0] >= 10:
                             hist.append((now, price))
-                        # === 處理 1m K線（成交量）===
-                    elif stream_name.endswith("@kline_1m"):
+                        # === 處理 15m K線（成交量）===
+                    elif stream_name.endswith("@kline_15m"):
                         k = data["k"]
                         sym = k["s"]
                         last_symbol = sym
@@ -385,12 +386,13 @@ async def handle_price_websocket(client, batch_symbols):
                         state = symbol_state[sym]
 
                         # 避免重複處理同一根K（Binance 會重發）
-                        if close_time <= state["last_kline_close_time_1m"]:
+                        if close_time <= state["last_kline_close_time_15m"]:
                             continue
 
                         quote_vol = float(k["q"])  # quoteVolume（USDT量）
-                        state["volume_1m"].append(quote_vol)
-                        state["last_kline_close_time_1m"] = close_time
+                        state["volume_15m"].append(quote_vol)
+                        state["last_kline_close_time_15m"] = close_time
+                        state["new_15m_kline"] = True  # 標記有新 15m K 收盤
                     elif stream_name.endswith("@kline_4h") or stream_name.endswith("@kline_1h"):
                         k = data["k"]
                         sym = k["s"]

@@ -30,37 +30,38 @@ def _pick_reference_point(hist, now: float, window_sec: int):
     return ref_t, ref_v
 
 
-def _calc_volume_stats_15m_from_1m(vol_deque, *, window_len: int = 15, baseline_len: int = 48 * 60):
-    """計算 15 分鐘成交量與 48 小時 baseline 的平均 15 分鐘成交量。
+def _calc_volume_stats_15m(vol_deque):
+    """計算 15m K 線成交量與 48 小時 baseline 的平均成交量。
 
     此函式是自動告警與手動檢查共用的成交量計算邏輯，避免兩邊修改不同步。
 
     規則：
-    - current_vol：最近 window_len 筆（1m）成交量總和
-    - baseline：排除最後 window_len 後，取前 baseline_len 筆（1m）
-    - avg_vol：baseline 的「1m 平均」換算成「window_len 分鐘平均」
+    - baseline：排除最後 1 根後，取前 192 根（48h）計算平均
+    - 比較最新一根 15m K 成交量是否高於平均 × VOLUME_THRESHOLD
 
     Args:
-        vol_deque: 1m quoteVolume 的序列（deque）。
-        window_len: 視窗長度（預設 15）。
-        baseline_len: baseline 長度（預設 48 小時 = 2880）。
+        vol_deque: 15m quoteVolume 的序列（deque，maxlen=192）。
 
     Returns:
         (current_vol, avg_vol, vol_ratio):
-            current_vol: 最近 15 分鐘成交量
-            avg_vol: 過去 48 小時平均 15 分鐘成交量
+            current_vol: 最新一根 15m 成交量
+            avg_vol: 過去 48 小時平均 15m 成交量
             vol_ratio: current/avg（若 avg<=0 則為 0）
     """
     if vol_deque is None:
         return 0, 0, 0
-    if len(vol_deque) < window_len + baseline_len:
+    # 至少需要 192 根（48h）
+    if len(vol_deque) < 192:
         return 0, 0, 0
 
     vol_list = list(vol_deque)
-    current_vol = sum(vol_list[-window_len:])
-    baseline = vol_list[-(baseline_len + window_len):-window_len]
-    avg_vol = (sum(baseline) / len(baseline) * window_len) if baseline else 0
+    # 最新一根成交量
+    current_vol = vol_list[-1]
+    # baseline：排除最後 1 根，取前面所有（最多 191 根）
+    baseline = vol_list[:-1]
+    avg_vol = sum(baseline) / len(baseline) if baseline else 0
     vol_ratio = (current_vol / avg_vol) if avg_vol > 0 else 0
+    
     return current_vol, avg_vol, vol_ratio
 
 
@@ -82,11 +83,21 @@ def _format_alert_reason(*, vol_ratio: float, price_pct, oi_pct):
     )
 
 
-def _build_alert_data(*, vol_ratio: float, price_pct, oi_pct):
-    """統一建立告警資料結構（供 send_alert 與手動檢查共用）。"""
+def _build_alert_data(*, vol_ratio: float, price_pct, oi_pct, trend_1h=None, trend_4h=None):
+    """統一建立告警資料結構（供 send_alert 與手動檢查共用）。
+    
+    Args:
+        vol_ratio: 成交量倍數
+        price_pct: 價格變化百分比
+        oi_pct: OI 變化百分比
+        trend_1h: 1h 趨勢是否符合（True/False/None）
+        trend_4h: 4h 趨勢是否符合（True/False/None）
+    """
     return {
         "price_pct": price_pct,
         "oi_pct": oi_pct,
+        "trend_1h": trend_1h,
+        "trend_4h": trend_4h,
         "reason": [_format_alert_reason(vol_ratio=vol_ratio, price_pct=price_pct, oi_pct=oi_pct)],
     }
 
@@ -177,18 +188,26 @@ async def check_conditions(client, sym):
     now = time.time()
     vol_ratio = 0
     try:
-        current_vol, avg_vol, vol_ratio = _calc_volume_stats_15m_from_1m(state.get("volume_1m"))
+        current_vol, avg_vol, vol_ratio = _calc_volume_stats_15m(state.get("volume_15m"))
         if avg_vol <= 0:
             return None
-        if avg_vol > 0 and current_vol > avg_vol * VOLUME_THRESHOLD:
+        # 檢查最新一根是否 > 閾值
+        if current_vol > avg_vol * VOLUME_THRESHOLD:
             oi_met, oi_pct = await check_oi_condition(sym, now)
             price_met, price_pct = await check_price_condition(sym, now)
-            # kline_4h = await check_kline_overfulfil(sym, "4h")
-
-            reasons = []
+            
+            # 檢查趨勢（參考項目，不強制）
+            trend_1h = await check_kline_overfulfil(sym, "1h")
+            trend_4h = await check_kline_overfulfil(sym, "4h")
 
             if price_met:
-                return _build_alert_data(vol_ratio=vol_ratio, price_pct=price_pct, oi_pct=oi_pct)
+                return _build_alert_data(
+                    vol_ratio=vol_ratio, 
+                    price_pct=price_pct, 
+                    oi_pct=oi_pct,
+                    trend_1h=trend_1h,
+                    trend_4h=trend_4h
+                )
             else: 
                 return None
     except:
@@ -226,21 +245,16 @@ async def check_conditions_manual(client, sym):
     vol_ratio = 0
     
     try:
-        # 2. 成交量檢查
-        logs.append("📊 檢查成交量條件...")
-        window_len = 15  # 15分鐘（每筆 1m）
-        baseline_len = 48 * 60  # 48小時（每筆 1m）
-        if len(state["volume_1m"]) < window_len + baseline_len:
-            logs.append(f"❌ 成交量資料不足：{len(state['volume_1m'])} < {window_len + baseline_len}")
+        # 2. 成交量檢查（15m K 線）
+        logs.append("📊 檢查成交量條件（15m K 線）...")
+        if len(state["volume_15m"]) < 192:
+            logs.append(f"❌ 成交量資料不足：{len(state['volume_15m'])} < 192 根")
             return None, logs
-        current_vol, avg_vol, vol_ratio = _calc_volume_stats_15m_from_1m(
-            state["volume_1m"],
-            window_len=window_len,
-            baseline_len=baseline_len,
-        )
         
-        logs.append(f"📊 當前成交量：{current_vol:,.0f}")
-        logs.append(f"📊 平均成交量：{avg_vol:,.0f}")
+        current_vol, avg_vol, vol_ratio = _calc_volume_stats_15m(state["volume_15m"])
+        
+        logs.append(f"📊 最新 15m 成交量：{current_vol:,.0f}")
+        logs.append(f"📊 48h 平均 15m 成交量：{avg_vol:,.0f}")
         logs.append(f"📊 成交量閥值：{VOLUME_THRESHOLD}倍")
         
         if avg_vol <= 0:
@@ -286,10 +300,31 @@ async def check_conditions_manual(client, sym):
         else:
             logs.append("❌ 價格資料不足")
             
-        # 5. 最終判斷
+        # 5. 趨勢檢查（參考項目）
+        logs.append("📊 檢查趨勢條件（參考項目）...")
+        trend_1h = await check_kline_overfulfil(sym, "1h")
+        trend_4h = await check_kline_overfulfil(sym, "4h")
+        
+        if trend_1h:
+            logs.append("✅ 1h 多頭排列")
+        else:
+            logs.append("❌ 1h 非多頭排列")
+            
+        if trend_4h:
+            logs.append("✅ 4h 多頭排列")
+        else:
+            logs.append("❌ 4h 非多頭排列")
+        
+        # 6. 最終判斷
         if price_met:
             logs.append("✅ 所有條件通過，會觸發告警！")
-            result = _build_alert_data(vol_ratio=vol_ratio, price_pct=price_pct, oi_pct=oi_pct)
+            result = _build_alert_data(
+                vol_ratio=vol_ratio, 
+                price_pct=price_pct, 
+                oi_pct=oi_pct,
+                trend_1h=trend_1h,
+                trend_4h=trend_4h
+            )
             return result, logs
         else:
             logs.append("❌ 價格條件未通過，不會觸發告警")
