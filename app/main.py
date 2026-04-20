@@ -8,7 +8,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from .setting.config import BOT_TOKEN
 from .setting.models import running, symbol_state
-from .datacenter.binance_opendata import initialize_symbols, monitor_price_websocket, update_open_interest
+from .datacenter.binance_opendata import initialize_symbols, monitor_price_websocket
 from .tgbot.monitor import periodic_screen
 from .extension.utils import setup_logging
 from .command import command
@@ -74,9 +74,9 @@ async def main():
     2) 建立 Binance AsyncClient
     3) 初始化監控幣種（建立 symbol_state 結構、載入歷史資料）
     4) 啟動三個背景任務：
-       - monitor_price_websocket：WebSocket 即時更新價格/成交量/EMA
-       - update_open_interest：REST 週期更新 OI
-       - periodic_screen：週期掃描條件並發告警
+       - monitor_price_websocket：WebSocket 即時更新價格/EMA，並觸發策略訊號
+       - periodic_screen：週期更新幣種清單、即時廢棄策略狀態
+       - daily_restart_scheduler：每日定時重啟
     5) 啟動 Telegram polling 讓使用者可下指令
     """
     global running, bot
@@ -90,7 +90,6 @@ async def main():
     # 註冊指令（用你自己的 enum）
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.COMMAND, command.command))
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.SEARCH, command.search))
-    application.add_handler(CommandHandler(bot_enum.TGBotCommand.CHECK, command.check))
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.STRATEGY, command.strategy))
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.CONFIG, command.config))
 
@@ -106,13 +105,12 @@ async def main():
             log.info("無合約，結束程式")
             return
 
-        # 四個背景任務
+        # 三個背景任務
         price_task   = asyncio.create_task(monitor_price_websocket(client))
-        oi_task      = asyncio.create_task(update_open_interest(client))
         screen_task  = asyncio.create_task(periodic_screen(client))
         restart_task = asyncio.create_task(daily_restart_scheduler(client))
 
-        log.info("四個背景任務已啟動（含每日重啟排程），準備啟動 Telegram polling...")
+        log.info("三個背景任務已啟動（含每日重啟排程），準備啟動 Telegram polling...")
 
         # 關鍵：Windows 下不能用 application.run_polling()
         # 改用手動四步驟，徹底解決巢狀 event loop 問題
@@ -127,7 +125,7 @@ async def main():
 
         # 等待所有背景任務（包含每日重啟排程）
         # Telegram polling 已經在背景跑了
-        await asyncio.gather(price_task, oi_task, screen_task, restart_task)
+        await asyncio.gather(price_task, screen_task, restart_task)
 
     except KeyboardInterrupt:
         log.info("\n收到中斷信號，停止中...")

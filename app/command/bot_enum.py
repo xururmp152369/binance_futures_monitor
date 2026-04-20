@@ -7,6 +7,5 @@ class TGBotCommand(StrEnum):
     """
     COMMAND  = "command"
     SEARCH   = "s"
-    CHECK    = "c"
     STRATEGY = "strategy"
     CONFIG   = "config"

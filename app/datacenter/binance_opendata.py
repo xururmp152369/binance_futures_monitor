@@ -4,10 +4,10 @@ import talib
 import numpy as np
 from binance import BinanceSocketManager
 from ..setting.config import EXCLUDE_SYMBOLS, BATCH_SIZE
-from ..setting.models import symbol_state, semaphore, running, price_history, oi_history, last_alert, strategy_state, runtime_config
+from ..setting.models import symbol_state, running, price_history, strategy_state, runtime_config
 from ..extension.utils import setup_logging
 from collections import deque
-from ..strategy.state_machine import on_new_4h_candle, on_new_1h_candle, on_new_15m_candle, on_new_15m_spike, replay_historical_4h_candles
+from ..strategy.state_machine import on_new_4h_candle, on_new_1h_candle, on_new_15m_candle, replay_historical_4h_candles
 from ..strategy.strategy_alerts import send_strategy_alert
 
 log = setup_logging()
@@ -128,80 +128,15 @@ async def load_historical_klines_ohlc(client, symbol, interval, limit=100, max_r
 
     return []
 
-async def load_historical_volume(client, symbol, limit=192, max_retries=3):
-    """載入歷史15分鐘成交量資料，包含重試機制。
-
-    注意：Binance `futures_klines` 的單次 `limit` 有上限（常見為 1500），
-    因此需要用 endTime 分頁往前抓取，拼出最近的 48h（192 根 15m K）。
-
-    Args:
-        client: Binance AsyncClient
-        symbol: 合約幣種（例如 BTCUSDT）
-        limit: 需要的 15m 根數（例如 48h = 192）
-        max_retries: 每一頁最多重試次數
-
-    Returns:
-        list[float]: 依時間由舊到新排列的 quoteVolume(USDT) 序列。
-        可能少於 limit（例如幣種上市時間較短或 API 回傳不足）。
-    """
-    max_limit_per_request = 1500
-    need = int(limit)
-    if need <= 0:
-        return []
-
-    volumes = []
-    end_time_ms = int(time.time() * 1000)
-
-    while need > 0:
-        req_limit = min(max_limit_per_request, need)
-        for retry in range(max_retries):
-            try:
-                klines = await client.futures_klines(
-                    symbol=symbol,
-                    interval="15m",
-                    limit=req_limit,
-                    endTime=end_time_ms,
-                )
-
-                if not klines:
-                    return volumes
-
-                # klines: [ [open_time, o, h, l, c, v, close_time, quoteVol, ...], ... ]
-                # 依時間由舊到新，這裡要把更舊的一段塞到最前面
-                chunk = [float(k[7]) for k in klines]
-                volumes = chunk + volumes
-
-                need -= len(klines)
-                first_open_time = int(klines[0][0])
-                end_time_ms = first_open_time - 1
-                break
-
-            except Exception as e:
-                error_msg = str(e).lower()
-
-                if _is_rate_limit_error(error_msg):
-                    await _sleep_rate_limit_backoff(retry, max_retries)
-                    continue
-
-                log.error(f"載入 {symbol} 成交量歷史資料失敗: {e}")
-                return volumes
-        else:
-            return volumes
-
-    return volumes
-
 async def load_historical_data_batch(client, symbols):
     """批次載入新幣種的歷史資料。
 
-    會依序載入：
-    - 1h close + EMA
-    - 4h close + EMA
-    - 15m quoteVolume（用於成交量 vs 48h baseline）
+    會依序載入：1h/4h close + EMA，以及策略用 15m/1h/4h OHLC。
 
     為避免觸發 API 限制，內部使用 `hist_semaphore` 控制並發，並在每個 API 呼叫後 sleep。
 
     Side effects:
-        會直接填充 `symbol_state[symbol]` 內的 deque（kline_*_closes / volume_15m）與 ema_*。
+        會直接填充 `symbol_state[symbol]` 內的 deque（kline_*_closes / kline_*_ohlc）與 ema_*。
     """
     if not symbols:
         return
@@ -243,13 +178,6 @@ async def load_historical_data_batch(client, symbols):
                     # API 呼叫間隔
                     await asyncio.sleep(0.5)
                     
-                    # 載入 15 分鐘成交量
-                    volumes = await load_historical_volume(client, symbol, 192)
-                    if volumes:
-                        symbol_state[symbol]["volume_15m"].extend(volumes)
-
-                    await asyncio.sleep(0.5)
-
                     # 載入策略用 OHLC（4h / 1h / 15m）
                     ohlc_4h = await load_historical_klines_ohlc(client, symbol, "4h", 50)
                     if ohlc_4h:
@@ -308,7 +236,6 @@ async def initialize_symbols(client):
                 and not any(s.endswith(ex) for ex in EXCLUDE_SYMBOLS)):
                 valid.add(s)
 
-        now = time.time()
         new_symbols = []
         
         for s in valid:
@@ -316,17 +243,12 @@ async def initialize_symbols(client):
                 # 先建立基本結構
                 symbol_state[s] = {
                     "last_price": None,
-                    "last_oi": None,
                     "funding_rate": 0.0,
-                    "monitor_start": now - 120,
-                    "volume_15m": deque(maxlen=192),  # 48h = 192 根 15m K
-                    "last_kline_close_time_15m": 0,  # 避免重複處理同一根
-                    "new_15m_kline": False,  # 標記是否有新 15m K 收盤
+                    "last_kline_close_time_15m": 0,
                     "kline_1h_closes": deque(maxlen=100),
                     "ema_1h": {15: None, 30: None, 45: None, 60: None},
                     "kline_4h_closes": deque(maxlen=100),
                     "ema_4h": {15: None, 30: None, 45: None, 60: None},
-                    # 策略用 OHLC deque
                     "kline_4h_ohlc":  deque(maxlen=50),
                     "kline_1h_ohlc":  deque(maxlen=100),
                     "kline_15m_ohlc": deque(maxlen=200),
@@ -345,52 +267,11 @@ async def initialize_symbols(client):
                 log.info(f"幣種 {s} 不再符合條件，開始清理...")
                 symbol_state.pop(s, None)
                 price_history.pop(s, None)
-                oi_history.pop(s, None)
-                last_alert.pop(s, None)
                 strategy_state.pop(s, None)
                 log.info(f"幣種 {s} 已清理")   
 
     except Exception as e:
         log.error(f"初始化幣種失敗: {e}")
-
-# ================== 合約幣對 持倉量監控 ==================
-
-async def update_open_interest(client):
-    """週期性更新所有監控幣種的持倉量（Open Interest）。
-
-    - 會分批（每批 50）併發呼叫 `fetch_oi`
-    - 每輪完成後 sleep 60 秒
-    """
-    while running:
-        symbols = list(symbol_state.keys())
-        if not symbols:
-            await asyncio.sleep(60)
-            continue
-
-        for i in range(0, len(symbols), 50):
-            batch = symbols[i:i+50]
-            tasks = [fetch_oi(client, sym) for sym in batch]
-            await asyncio.gather(*tasks, return_exceptions=True)
-            await asyncio.sleep(1)
-        await asyncio.sleep(60)
-
-async def fetch_oi(client, sym):
-    """抓取單一幣種的 Open Interest 並更新到 state 與 history。
-
-    Side effects:
-        - `symbol_state[sym]["last_oi"]` 會被更新
-        - `oi_history[sym]` 會以節流方式 append (timestamp, oi)
-    """
-    async with semaphore:
-        data = await client.futures_open_interest(symbol=sym)
-        oi = float(data["openInterest"])
-        now = time.time()
-        state = symbol_state[sym]
-        state["last_oi"] = oi
-
-        hist = oi_history[sym]
-        if not hist or now - hist[-1][0] >= 10:
-            hist.append((now, oi))
 
 # ================== 合約幣對 價格K棒監控 ==================
 
@@ -399,8 +280,9 @@ async def handle_price_websocket(client, batch_symbols):
 
     訂閱 stream：
     - markPrice：更新最新價格、資金費率、並寫入 price_history
-    - kline_15m：K 線收盤後寫入 volume_15m 並設定 new_15m_kline flag
-    - kline_1h / kline_4h：K 線收盤後更新 close deque 並計算 EMA
+    - kline_15m：K 線收盤後儲存 OHLC，觸發 Type1 突破檢查
+    - kline_1h：K 線收盤後更新 EMA，觸發 Type2 均線反彈檢查
+    - kline_4h：K 線收盤後更新 EMA，驅動策略狀態機
 
     發生接收例外時會記錄最後一筆 stream/symbol/interval，方便排查。
     """
@@ -465,11 +347,8 @@ async def handle_price_websocket(client, batch_symbols):
                             continue
 
                         quote_vol = float(k["q"])  # quoteVolume（USDT量）
-                        state["volume_15m"].append(quote_vol)
                         state["last_kline_close_time_15m"] = close_time
-                        state["new_15m_kline"] = True  # 標記有新 15m K 收盤
 
-                        # 策略：儲存 OHLC 並檢查 Type1 突破
                         candle_15m = (
                             int(k["t"]),       # open_time_ms（統一用開盤時間）
                             float(k["o"]),
@@ -479,11 +358,6 @@ async def handle_price_websocket(client, batch_symbols):
                             quote_vol,
                         )
                         state["kline_15m_ohlc"].append(candle_15m)
-
-                        # Type 0：量價異動（原突破告警）
-                        signal_t0 = on_new_15m_spike(sym, candle_15m)
-                        if signal_t0:
-                            asyncio.create_task(send_strategy_alert(sym, signal_t0))
 
                         # Type 1：帶量突破盤整頂部
                         signal_15m = on_new_15m_candle(sym, candle_15m)

@@ -39,7 +39,7 @@ def format_type1_alert(symbol: str, signal: dict) -> str:
         f"🟢 目標：`{_fmt_price(top)}`（盤整頂部）\n"
         f"\n"
         f"📦 盤整區間：`{_fmt_price(bottom)}` ～ `{_fmt_price(top)}`（幅度 {range_pct:.1f}%）\n"
-        f"[📈 查看圖表](https://www.binance.com/zh-TC/futures/{symbol.replace('USDT', '')})"
+        f"[📈 查看圖表](https://www.binance.com/zh-TC/futures/{symbol})"
     )
 
 
@@ -69,32 +69,7 @@ def format_type2_alert(symbol: str, signal: dict) -> str:
         f"🟢 目標：`{_fmt_price(top)}`（盤整頂部，+{top_pct:.2f}%）\n"
         f"\n"
         f"📦 盤整區間：`{_fmt_price(bottom)}` ～ `{_fmt_price(top)}`\n"
-        f"[📈 查看圖表](https://www.binance.com/zh-TC/futures/{symbol.replace('USDT', '')})"
-    )
-
-
-def format_type0_alert(symbol: str, signal: dict) -> str:
-    sym_display = symbol.replace("USDT", "USDT.P")
-    price     = signal["close"]
-    price_pct = signal["price_pct"]
-    vol_ratio = signal["vol_ratio"]
-    trend_1h  = signal.get("trend_1h")
-    trend_4h  = signal.get("trend_4h")
-
-    direction      = "📈 上漲" if price_pct >= 0 else "📉 下跌"
-    trend_1h_icon  = "✅" if trend_1h else "❌"
-    trend_4h_icon  = "✅" if trend_4h else "❌"
-
-    return (
-        f"🚨 *{sym_display} 量價異動*\n"
-        f"⌚ {_now_str()}\n"
-        f"\n"
-        f"{direction} `{price_pct:+.2f}%`\n"
-        f"💰 價格：`{_fmt_price(price)}`\n"
-        f"📊 量能：`{vol_ratio:.1f}×` 均值\n"
-        f"📊 趨勢：1h {trend_1h_icon} / 4h {trend_4h_icon}\n"
-        f"\n"
-        f"[📈 查看圖表](https://www.binance.com/zh-TC/futures/{symbol.replace('USDT', '')})"
+        f"[📈 查看圖表](https://www.binance.com/zh-TC/futures/{symbol})"
     )
 
 
@@ -106,9 +81,7 @@ async def send_strategy_alert(symbol: str, signal: dict) -> bool:
     """
     try:
         sig_type = signal.get("type")
-        if sig_type == "type0":
-            text = format_type0_alert(symbol, signal)
-        elif sig_type == "type1":
+        if sig_type == "type1":
             text = format_type1_alert(symbol, signal)
         elif sig_type == "type2":
             text = format_type2_alert(symbol, signal)

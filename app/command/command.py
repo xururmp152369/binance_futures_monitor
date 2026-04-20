@@ -4,9 +4,7 @@ from telegram.ext import (
     ContextTypes,
 )
 from ..setting.models import symbol_state, price_history, strategy_state, runtime_config
-from ..tgbot.conditions import check_conditions_manual
 from ..strategy.state_machine import StrategyPhase
-from binance import AsyncClient
 from ..extension.utils import reply_text_long
 
 async def command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -17,10 +15,9 @@ async def command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"嗨 {user.first_name}！\n\n"
         "可用指令：\n"
         "/s <coin> 搜尋指定幣種的歷史資料，ex: btc\n"
-        "/c <coin> 檢查是否符合發送條件，ex: btc\n"
         "/strategy <coin> 查看策略狀態，ex: btc\n"
         "/config 查看所有可調整參數\n"
-        "/config set PARAM VALUE 修改參數，ex: /config set VOLUME_THRESHOLD 5\n"
+        "/config set PARAM VALUE 修改參數，ex: /config set PUMP_THRESHOLD 8\n"
         "試試看吧！"
     )
 
@@ -37,10 +34,6 @@ async def config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not args:
         lines = ["⚙️ *執行期參數一覽*\n"]
         descriptions = {
-            "OI_THRESHOLD":            "OI 1h 變化門檻 (%)",
-            "PRICE_THRESHOLD":         "15m 價格異動門檻 (%)",
-            "VOLUME_THRESHOLD":        "成交量倍數門檻 (× 均值)",
-            "ALERT_COOLDOWN":          "量價告警冷卻 (秒)",
             "QUOTE_VOLUME":            "24h 最低成交量篩選 (USDT)",
             "PUMP_THRESHOLD":          "4h 拉漲偵測門檻 (%)",
             "CONSOLIDATION_MIN_HOURS": "最低盤整時數 (h)",
@@ -80,7 +73,7 @@ async def config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        "用法：\n/config\n/config set PARAM VALUE\n\n例如：/config set VOLUME_THRESHOLD 5"
+        "用法：\n/config\n/config set PARAM VALUE\n\n例如：/config set PUMP_THRESHOLD 8"
     )
 
 
@@ -173,50 +166,3 @@ async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         symbol_message = "\n".join(symbol_info)
         await reply_text_long(update.message, symbol_message)
 
-async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/c 指令：手動檢查指定幣對是否會觸發告警，並回傳詳細日誌。
-
-    會呼叫 `check_conditions_manual()`，把每個計算步驟的數值透過 Telegram 回傳。
-    """
-    args = context.args
-
-    if not args:
-        await update.message.reply_text("用法：\n/c btc eth\n手動檢查指定幣對的告警條件")
-        return
-
-    # 處理多個幣對
-    symbols = [arg.upper() if "USDT" in arg.upper() else f"{arg.upper()}USDT" for arg in args]
-    
-    # 建立 Binance 客戶端
-    client = await AsyncClient.create()
-    
-    try:
-        for symbol in symbols:
-            # 檢查幣對是否存在
-            if symbol not in symbol_state:
-                await update.message.reply_text(f"{symbol}：未監控的幣對")
-                continue
-                
-            # 執行手動檢查
-            result, logs = await check_conditions_manual(client, symbol)
-            
-            # 組合日誌訊息
-            log_message = f"{symbol} 條件檢查結果：\n\n" + "\n".join(logs)
-            
-            # 發送日誌
-            await reply_text_long(update.message, log_message)
-            
-            # 如果有結果，發送告警訊息
-            if result:
-                alert_message = f"🚨 手動檢查觸發告警！\n\n"
-                alert_message += f"幣對：{symbol}\n"
-                alert_message += f"價格變化：{result['price_pct']:+.2f}%\n"
-                alert_message += f"持倉量變化：{result['oi_pct'] or 0:+.2f}%\n\n"
-                alert_message += result['reason'][0]
-                
-                await reply_text_long(update.message, alert_message)
-                
-    except Exception as e:
-        await update.message.reply_text(f"檢查過程發生錯誤：{str(e)}")
-    finally:
-        await client.close_connection()
