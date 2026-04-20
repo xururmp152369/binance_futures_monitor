@@ -91,6 +91,8 @@ async def main():
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.COMMAND, command.command))
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.SEARCH, command.search))
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.CHECK, command.check))
+    application.add_handler(CommandHandler(bot_enum.TGBotCommand.STRATEGY, command.strategy))
+    application.add_handler(CommandHandler(bot_enum.TGBotCommand.CONFIG, command.config))
 
     # Binance client
     client = await AsyncClient.create()

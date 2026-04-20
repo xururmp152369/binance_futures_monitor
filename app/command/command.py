@@ -1,9 +1,11 @@
+from datetime import datetime
 from telegram import Update
 from telegram.ext import (
     ContextTypes,
 )
-from ..setting.models import symbol_state, price_history
+from ..setting.models import symbol_state, price_history, strategy_state, runtime_config
 from ..tgbot.conditions import check_conditions_manual
+from ..strategy.state_machine import StrategyPhase
 from binance import AsyncClient
 from ..extension.utils import reply_text_long
 
@@ -16,8 +18,123 @@ async def command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "可用指令：\n"
         "/s <coin> 搜尋指定幣種的歷史資料，ex: btc\n"
         "/c <coin> 檢查是否符合發送條件，ex: btc\n"
+        "/strategy <coin> 查看策略狀態，ex: btc\n"
+        "/config 查看所有可調整參數\n"
+        "/config set PARAM VALUE 修改參數，ex: /config set VOLUME_THRESHOLD 5\n"
         "試試看吧！"
     )
+
+
+async def config(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/config 指令：查看或動態修改執行期參數。
+
+    用法：
+      /config              → 顯示所有目前參數值
+      /config set PARAM VALUE → 修改指定參數（重啟後還原預設值）
+    """
+    args = context.args
+
+    if not args:
+        lines = ["⚙️ *執行期參數一覽*\n"]
+        descriptions = {
+            "OI_THRESHOLD":            "OI 1h 變化門檻 (%)",
+            "PRICE_THRESHOLD":         "15m 價格異動門檻 (%)",
+            "VOLUME_THRESHOLD":        "成交量倍數門檻 (× 均值)",
+            "ALERT_COOLDOWN":          "量價告警冷卻 (秒)",
+            "QUOTE_VOLUME":            "24h 最低成交量篩選 (USDT)",
+            "PUMP_THRESHOLD":          "4h 拉漲偵測門檻 (%)",
+            "CONSOLIDATION_MIN_HOURS": "最低盤整時數 (h)",
+            "BREAKOUT_VOLUME_MULT":    "Type1 突破量能倍數",
+            "EMA_TOUCH_THRESHOLD":     "Type2 EMA 觸碰容忍 (%)",
+            "WICK_THRESHOLD":          "Type2 有效收針 (%)",
+            "STRATEGY_RR_MIN":         "Type2 最低盈虧比",
+            "STRATEGY_COOLDOWN":       "策略告警冷卻 (秒)",
+        }
+        for key, val in runtime_config.items():
+            desc = descriptions.get(key, "")
+            lines.append(f"`{key}` = `{val}` — {desc}")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        return
+
+    if args[0].lower() == "set" and len(args) >= 3:
+        param = args[1].upper()
+        raw_val = args[2]
+
+        if param not in runtime_config:
+            await update.message.reply_text(
+                f"❌ 未知參數：`{param}`\n輸入 /config 查看所有可用參數",
+                parse_mode="Markdown",
+            )
+            return
+
+        try:
+            old_val = runtime_config[param]
+            new_val = int(float(raw_val)) if isinstance(old_val, int) else float(raw_val)
+            runtime_config[param] = new_val
+            await update.message.reply_text(
+                f"✅ 已更新 `{param}`\n`{old_val}` → `{new_val}`",
+                parse_mode="Markdown",
+            )
+        except ValueError:
+            await update.message.reply_text(f"❌ 無效的數值：`{raw_val}`", parse_mode="Markdown")
+        return
+
+    await update.message.reply_text(
+        "用法：\n/config\n/config set PARAM VALUE\n\n例如：/config set VOLUME_THRESHOLD 5"
+    )
+
+
+async def strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/strategy 指令：查看指定幣種的策略狀態機當前狀態。"""
+    args = context.args
+    if not args:
+        await update.message.reply_text("用法：\n/strategy btc\n查看指定幣種的策略狀態")
+        return
+
+    symbols = [arg.upper() if "USDT" in arg.upper() else f"{arg.upper()}USDT" for arg in args]
+
+    for symbol in symbols:
+        if symbol not in symbol_state:
+            await update.message.reply_text(f"{symbol}：未監控的幣對")
+            continue
+
+        st = strategy_state.get(symbol)
+        if not st:
+            await update.message.reply_text(f"{symbol}：尚無策略狀態（IDLE）")
+            continue
+
+        phase = st.get("phase", StrategyPhase.IDLE)
+        phase_label = {
+            StrategyPhase.IDLE:     "💤 IDLE（閒置）",
+            StrategyPhase.TRACKING: "👀 TRACKING（追蹤盤整）",
+            StrategyPhase.READY:    "✅ READY（就緒，監控訊號）",
+        }.get(phase, str(phase))
+
+        lines = [f"📊 *{symbol} 策略狀態*", f"Phase：{phase_label}"]
+
+        if phase != StrategyPhase.IDLE:
+            pump_time = st.get("pump_candle_time")
+            pump_time_str = (
+                datetime.fromtimestamp(pump_time).strftime("%Y/%m/%d %H:%M")
+                if pump_time else "N/A"
+            )
+            start_ts = st.get("consolidation_start_ts")
+            elapsed_h = (datetime.now().timestamp() - start_ts) / 3600 if start_ts else 0
+
+            lines += [
+                f"拉漲時間：{pump_time_str}",
+                f"已盤整：{elapsed_h:.1f} 小時",
+                f"盤整底部：`{st.get('consolidation_low', 0):.6f}`",
+                f"盤整頂部：`{st.get('consolidation_high', 0):.6f}`",
+            ]
+
+        last_ts = st.get("last_alert_ts", 0)
+        last_type = st.get("last_signal_type")
+        if last_ts and last_type:
+            last_str = datetime.fromtimestamp(last_ts).strftime("%Y/%m/%d %H:%M")
+            lines.append(f"上次訊號：{last_type} ({last_str})")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/s 指令：輸出指定幣種的價格歷史快照。

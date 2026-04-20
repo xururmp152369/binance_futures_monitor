@@ -3,10 +3,12 @@ import time
 import talib
 import numpy as np
 from binance import BinanceSocketManager
-from ..setting.config import EXCLUDE_SYMBOLS, BATCH_SIZE, QUOTE_VOLUME
-from ..setting.models import symbol_state, semaphore, running, price_history, oi_history, last_alert
+from ..setting.config import EXCLUDE_SYMBOLS, BATCH_SIZE
+from ..setting.models import symbol_state, semaphore, running, price_history, oi_history, last_alert, strategy_state, runtime_config
 from ..extension.utils import setup_logging
 from collections import deque
+from ..strategy.state_machine import on_new_4h_candle, on_new_1h_candle, on_new_15m_candle, on_new_15m_spike, replay_historical_4h_candles
+from ..strategy.strategy_alerts import send_strategy_alert
 
 log = setup_logging()
 
@@ -81,6 +83,50 @@ async def load_historical_klines(client, symbol, interval, limit=100, max_retrie
                 break
     
     return [], {15: None, 30: None, 45: None, 60: None}
+
+async def load_historical_klines_ohlc(client, symbol, interval, limit=100, max_retries=3):
+    """載入歷史 K 線的完整 OHLC 資料，供策略狀態機使用。
+
+    Args:
+        client: Binance AsyncClient
+        symbol: 合約幣種（例如 BTCUSDT）
+        interval: K 線週期（"15m" / "1h" / "4h"）
+        limit: 取得 K 線根數
+        max_retries: 最多重試次數
+
+    Returns:
+        list[tuple]:
+            4h/1h → [(open_time_ms, open, high, low, close), ...]
+            15m   → [(open_time_ms, open, high, low, close, quote_volume), ...]
+        時間由舊到新排列。失敗時回傳空 list。
+    """
+    for retry in range(max_retries):
+        try:
+            klines = await client.futures_klines(
+                symbol=symbol,
+                interval=interval,
+                limit=limit,
+            )
+            result = []
+            for k in klines:
+                t = int(k[0])  # open_time_ms
+                o, h, l, c = float(k[1]), float(k[2]), float(k[3]), float(k[4])
+                if interval == "15m":
+                    vol = float(k[7])  # quoteVolume（USDT）
+                    result.append((t, o, h, l, c, vol))
+                else:
+                    result.append((t, o, h, l, c))
+            return result
+
+        except Exception as e:
+            error_msg = str(e).lower()
+            if _is_rate_limit_error(error_msg):
+                await _sleep_rate_limit_backoff(retry, max_retries)
+                continue
+            log.error(f"載入 {symbol} {interval} OHLC 歷史資料失敗: {e}")
+            break
+
+    return []
 
 async def load_historical_volume(client, symbol, limit=192, max_retries=3):
     """載入歷史15分鐘成交量資料，包含重試機制。
@@ -201,7 +247,29 @@ async def load_historical_data_batch(client, symbols):
                     volumes = await load_historical_volume(client, symbol, 192)
                     if volumes:
                         symbol_state[symbol]["volume_15m"].extend(volumes)
-                    
+
+                    await asyncio.sleep(0.5)
+
+                    # 載入策略用 OHLC（4h / 1h / 15m）
+                    ohlc_4h = await load_historical_klines_ohlc(client, symbol, "4h", 50)
+                    if ohlc_4h:
+                        symbol_state[symbol]["kline_4h_ohlc"].extend(ohlc_4h)
+
+                    await asyncio.sleep(0.5)
+
+                    ohlc_1h = await load_historical_klines_ohlc(client, symbol, "1h", 100)
+                    if ohlc_1h:
+                        symbol_state[symbol]["kline_1h_ohlc"].extend(ohlc_1h)
+
+                    await asyncio.sleep(0.5)
+
+                    ohlc_15m = await load_historical_klines_ohlc(client, symbol, "15m", 200)
+                    if ohlc_15m:
+                        symbol_state[symbol]["kline_15m_ohlc"].extend(ohlc_15m)
+
+                    # 重播歷史 4h K 棒以恢復策略狀態
+                    replay_historical_4h_candles(symbol)
+
                     log.info(f"✅ {symbol} 歷史資料載入完成")
                     
                 except Exception as e:
@@ -236,7 +304,7 @@ async def initialize_symbols(client):
         for t in ticker24:
             s = t["symbol"]
             if (s.endswith("USDT") 
-                and float(t["quoteVolume"]) >= QUOTE_VOLUME # 24h 成交量
+                and float(t["quoteVolume"]) >= runtime_config["QUOTE_VOLUME"] # 24h 成交量
                 and not any(s.endswith(ex) for ex in EXCLUDE_SYMBOLS)):
                 valid.add(s)
 
@@ -258,6 +326,10 @@ async def initialize_symbols(client):
                     "ema_1h": {15: None, 30: None, 45: None, 60: None},
                     "kline_4h_closes": deque(maxlen=100),
                     "ema_4h": {15: None, 30: None, 45: None, 60: None},
+                    # 策略用 OHLC deque
+                    "kline_4h_ohlc":  deque(maxlen=50),
+                    "kline_1h_ohlc":  deque(maxlen=100),
+                    "kline_15m_ohlc": deque(maxlen=200),
                 }
                 new_symbols.append(s)
 
@@ -275,6 +347,7 @@ async def initialize_symbols(client):
                 price_history.pop(s, None)
                 oi_history.pop(s, None)
                 last_alert.pop(s, None)
+                strategy_state.pop(s, None)
                 log.info(f"幣種 {s} 已清理")   
 
     except Exception as e:
@@ -371,7 +444,7 @@ async def handle_price_websocket(client, batch_symbols):
                         hist = price_history[sym]
                         if not hist or now - hist[-1][0] >= 10:
                             hist.append((now, price))
-                        # === 處理 15m K線（成交量）===
+                        # === 處理 15m K線（成交量 + OHLC + 策略 Type1）===
                     elif stream_name.endswith("@kline_15m"):
                         k = data["k"]
                         sym = k["s"]
@@ -395,30 +468,95 @@ async def handle_price_websocket(client, batch_symbols):
                         state["volume_15m"].append(quote_vol)
                         state["last_kline_close_time_15m"] = close_time
                         state["new_15m_kline"] = True  # 標記有新 15m K 收盤
-                    elif stream_name.endswith("@kline_4h") or stream_name.endswith("@kline_1h"):
+
+                        # 策略：儲存 OHLC 並檢查 Type1 突破
+                        candle_15m = (
+                            int(k["t"]),       # open_time_ms（統一用開盤時間）
+                            float(k["o"]),
+                            float(k["h"]),
+                            float(k["l"]),
+                            float(k["c"]),
+                            quote_vol,
+                        )
+                        state["kline_15m_ohlc"].append(candle_15m)
+
+                        # Type 0：量價異動（原突破告警）
+                        signal_t0 = on_new_15m_spike(sym, candle_15m)
+                        if signal_t0:
+                            asyncio.create_task(send_strategy_alert(sym, signal_t0))
+
+                        # Type 1：帶量突破盤整頂部
+                        signal_15m = on_new_15m_candle(sym, candle_15m)
+                        if signal_15m:
+                            asyncio.create_task(send_strategy_alert(sym, signal_15m))
+
+                    # === 處理 4h K線（EMA + OHLC + 策略狀態機）===
+                    elif stream_name.endswith("@kline_4h"):
                         k = data["k"]
                         sym = k["s"]
-                        interval = k["i"]
                         last_symbol = sym
-                        last_interval = interval
-                        if sym not in symbol_state: continue
-                        if not k["x"]: continue  # 只處理收盤
+                        last_interval = k.get("i")
+                        if sym not in symbol_state:
+                            continue
+                        if not k["x"]:
+                            continue
 
                         close_price = float(k["c"])
                         state = symbol_state[sym]
+                        state["kline_4h_closes"].append(close_price)
 
-                        # 超簡單一行：自動丟最舊
-                        state[f"kline_{interval}_closes"].append(close_price)
+                        closes = np.array(state["kline_4h_closes"])
+                        if len(closes) >= 60:
+                            state["ema_4h"][15] = talib.EMA(closes, timeperiod=15)[-1]
+                            state["ema_4h"][30] = talib.EMA(closes, timeperiod=30)[-1]
+                            state["ema_4h"][45] = talib.EMA(closes, timeperiod=45)[-1]
+                            state["ema_4h"][60] = talib.EMA(closes, timeperiod=60)[-1]
 
-                        # 轉成 numpy array（talib 必備）
-                        closes = np.array(state[f"kline_{interval}_closes"])
+                        # 策略：儲存 OHLC 並驅動狀態機
+                        candle_4h = (
+                            int(k["t"]),       # open_time_ms
+                            float(k["o"]),
+                            float(k["h"]),
+                            float(k["l"]),
+                            close_price,
+                        )
+                        state["kline_4h_ohlc"].append(candle_4h)
+                        on_new_4h_candle(sym, candle_4h)
 
-                        # 一行算出所有 EMA
-                        if len(closes) >= 60:  # 至少要有 60 根才算 EMA60
-                            state[f"ema_{interval}"][15] = talib.EMA(closes, timeperiod=15)[-1]
-                            state[f"ema_{interval}"][30] = talib.EMA(closes, timeperiod=30)[-1]
-                            state[f"ema_{interval}"][45] = talib.EMA(closes, timeperiod=45)[-1]
-                            state[f"ema_{interval}"][60] = talib.EMA(closes, timeperiod=60)[-1]
+                    # === 處理 1h K線（EMA + OHLC + 策略 Type2）===
+                    elif stream_name.endswith("@kline_1h"):
+                        k = data["k"]
+                        sym = k["s"]
+                        last_symbol = sym
+                        last_interval = k.get("i")
+                        if sym not in symbol_state:
+                            continue
+                        if not k["x"]:
+                            continue
+
+                        close_price = float(k["c"])
+                        state = symbol_state[sym]
+                        state["kline_1h_closes"].append(close_price)
+
+                        closes = np.array(state["kline_1h_closes"])
+                        if len(closes) >= 60:
+                            state["ema_1h"][15] = talib.EMA(closes, timeperiod=15)[-1]
+                            state["ema_1h"][30] = talib.EMA(closes, timeperiod=30)[-1]
+                            state["ema_1h"][45] = talib.EMA(closes, timeperiod=45)[-1]
+                            state["ema_1h"][60] = talib.EMA(closes, timeperiod=60)[-1]
+
+                        # 策略：儲存 OHLC 並檢查 Type2 反彈
+                        candle_1h = (
+                            int(k["t"]),       # open_time_ms
+                            float(k["o"]),
+                            float(k["h"]),
+                            float(k["l"]),
+                            close_price,
+                        )
+                        state["kline_1h_ohlc"].append(candle_1h)
+                        signal_1h = on_new_1h_candle(sym, candle_1h)
+                        if signal_1h:
+                            asyncio.create_task(send_strategy_alert(sym, signal_1h))
                 except asyncio.CancelledError:
                     log.info(f"批次 WebSocket 收到取消信號 | batch_symbols={batch_symbols[:3]}...")
                     break

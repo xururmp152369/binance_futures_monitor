@@ -1,8 +1,7 @@
 import time
 import asyncio
 from binance import Client
-from ..setting.config import OI_THRESHOLD, PRICE_THRESHOLD, VOLUME_THRESHOLD
-from ..setting.models import symbol_state, oi_history, price_history
+from ..setting.models import symbol_state, oi_history, price_history, runtime_config
 
 def _pick_reference_point(hist, now: float, window_sec: int):
     """從 (timestamp, value) 的歷史序列中挑選最接近目標窗口的參考點。
@@ -123,7 +122,7 @@ async def check_oi_condition(symbol, now):
         return False, None
     pct = (cur - old_oi) / old_oi * 100
     if now - old_t < 3600: return False, pct
-    return pct > OI_THRESHOLD, pct
+    return pct > runtime_config["OI_THRESHOLD"], pct
 
 async def check_price_condition(symbol, now):
     """檢查價格是否符合 15 分鐘變化門檻。
@@ -147,7 +146,7 @@ async def check_price_condition(symbol, now):
         return False, None
     pct = (cur - old_p) / old_p * 100
     if now - old_t < 900: return False, pct
-    return pct > PRICE_THRESHOLD, pct
+    return pct > runtime_config["PRICE_THRESHOLD"], pct
 
 async def check_kline_overfulfil(symbol, kline):
     """判斷指定 K 線週期是否呈現 EMA 多頭排列且價格站上關鍵均線。
@@ -192,7 +191,7 @@ async def check_conditions(client, sym):
         if avg_vol <= 0:
             return None
         # 檢查最新一根是否 > 閾值
-        if current_vol > avg_vol * VOLUME_THRESHOLD:
+        if current_vol > avg_vol * runtime_config["VOLUME_THRESHOLD"]:
             oi_met, oi_pct = await check_oi_condition(sym, now)
             price_met, price_pct = await check_price_condition(sym, now)
             
@@ -255,7 +254,7 @@ async def check_conditions_manual(client, sym):
         
         logs.append(f"📊 最新 15m 成交量：{current_vol:,.0f}")
         logs.append(f"📊 48h 平均 15m 成交量：{avg_vol:,.0f}")
-        logs.append(f"📊 成交量閥值：{VOLUME_THRESHOLD}倍")
+        logs.append(f"📊 成交量閥值：{runtime_config['VOLUME_THRESHOLD']}倍")
         
         if avg_vol <= 0:
             logs.append("❌ 平均成交量為 0，無法比較")
@@ -278,7 +277,7 @@ async def check_conditions_manual(client, sym):
         
         if oi_pct is not None:
             logs.append(f"📊 持倉量變化：{oi_pct:+.2f}%")
-            logs.append(f"📊 持倉量閥值：{OI_THRESHOLD}%")
+            logs.append(f"📊 持倉量閥值：{runtime_config['OI_THRESHOLD']}%")
             if oi_met:
                 logs.append(f"✅ 持倉量條件通過")
             else:
@@ -292,7 +291,7 @@ async def check_conditions_manual(client, sym):
         
         if price_pct is not None:
             logs.append(f"📈 價格變化：{price_pct:+.2f}%")
-            logs.append(f"📈 價格閥值：{PRICE_THRESHOLD}%")
+            logs.append(f"📈 價格閥值：{runtime_config['PRICE_THRESHOLD']}%")
             if price_met:
                 logs.append(f"✅ 價格條件通過")
             else:

@@ -27,3 +27,12 @@ VOLUME_THRESHOLD = 7 # 成交量倍數
 QUOTE_VOLUME = 0 # 24h成交量額
 ALERT_COOLDOWN = 7200 # 同一幣種告警冷卻時間（秒）
 BATCH_SIZE = 20 # WebSocket 批次數量
+
+# ================== 策略參數 ==================
+PUMP_THRESHOLD          = 8      # 4h K 棒漲幅門檻（%），單根 (close-open)/open >= N%
+CONSOLIDATION_MIN_HOURS = 12     # 最低盤整時數，滿足後進入 READY 狀態
+BREAKOUT_VOLUME_MULT    = 3      # Type1 突破量能倍數（相對 48h 平均）
+EMA_TOUCH_THRESHOLD     = 0.5   # Type2 EMA 觸碰容忍距離（%），low <= EMA × (1 + N%)
+WICK_THRESHOLD          = 2      # Type2 有效收針：close > low × (1 + N%)
+STRATEGY_RR_MIN         = 1.0   # Type2 最低盈虧比
+STRATEGY_COOLDOWN       = 14400  # 策略告警冷卻秒數（4 小時）

@@ -1,8 +1,8 @@
 import time
 from ..setting import models
 from datetime import datetime
-from ..setting.config import CHAT_ID, ALERT_COOLDOWN
-from ..setting.models import symbol_state, last_alert
+from ..setting.config import CHAT_ID
+from ..setting.models import symbol_state, last_alert, runtime_config
 from ..extension.utils import setup_logging
 
 log = setup_logging()
@@ -31,7 +31,7 @@ async def send_alert(symbol: str, alert_data: dict):
         # 冷卻檢查：基於 15m K 收盤時間間隔
         if symbol in last_alert:
             last_kline_time = last_alert[symbol]
-            if current_kline_time - last_kline_time < ALERT_COOLDOWN:
+            if current_kline_time - last_kline_time < runtime_config["ALERT_COOLDOWN"]:
                 return
 
         # 記錄本次告警的 K 線收盤時間
