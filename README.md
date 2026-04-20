@@ -96,7 +96,7 @@ docker compose build
 - 背景啟動：
 
 ```powershell
-docker compose up -d
+docker compose up -d --build
 ```
 
 - 查看 logs：

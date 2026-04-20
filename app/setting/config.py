@@ -18,13 +18,12 @@ load_dotenv()
 # ================== 設定 ==================
 CHAT_ID = os.getenv("CHAT_ID") 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-EXCLUDE_SYMBOLS = {"BUSD", "USDC", "TUSD", "DAI"}
+EXCLUDE_SYMBOLS = {"USDC"}
 
 # ================== 參數 ==================
 OI_THRESHOLD = 8 # 持倉量變化百分比
 PRICE_THRESHOLD = 3 # 價格異動百分比
 VOLUME_THRESHOLD = 7 # 成交量倍數
-QUOTE_VOLUME = 6_000_000 # 24h成交量額
-ALERT_COOLDOWN = 3600 # 同一幣種告警冷卻時間
-BATCH_SIZE = 20 # 批次數量
-RESTART_INTERVAL = 3600 # 固定重啟秒數
+QUOTE_VOLUME = 0 # 24h成交量額
+ALERT_COOLDOWN = 7200 # 同一幣種告警冷卻時間（秒）
+BATCH_SIZE = 20 # WebSocket 批次數量

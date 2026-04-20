@@ -28,7 +28,7 @@ async def screen_and_alert(client):
             t["symbol"] for t in ticker24
             if t["symbol"].endswith("USDT")
             and float(t["quoteVolume"]) > QUOTE_VOLUME
-            and not any(ex in t["symbol"] for ex in EXCLUDE_SYMBOLS)
+            and not any(t["symbol"].endswith(ex) for ex in EXCLUDE_SYMBOLS)
         ]
 
         # 只檢查有新 15m K 收盤的幣種

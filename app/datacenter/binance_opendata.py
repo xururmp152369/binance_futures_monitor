@@ -3,7 +3,7 @@ import time
 import talib
 import numpy as np
 from binance import BinanceSocketManager
-from ..setting.config import EXCLUDE_SYMBOLS, BATCH_SIZE, RESTART_INTERVAL, QUOTE_VOLUME
+from ..setting.config import EXCLUDE_SYMBOLS, BATCH_SIZE, QUOTE_VOLUME
 from ..setting.models import symbol_state, semaphore, running, price_history, oi_history, last_alert
 from ..extension.utils import setup_logging
 from collections import deque
@@ -237,7 +237,7 @@ async def initialize_symbols(client):
             s = t["symbol"]
             if (s.endswith("USDT") 
                 and float(t["quoteVolume"]) >= QUOTE_VOLUME # 24h 成交量
-                and not any(ex in s for ex in EXCLUDE_SYMBOLS)):
+                and not any(s.endswith(ex) for ex in EXCLUDE_SYMBOLS)):
                 valid.add(s)
 
         now = time.time()
@@ -270,10 +270,12 @@ async def initialize_symbols(client):
         # 清理無效幣種
         for s in list(symbol_state):
             if s not in valid:
+                log.info(f"幣種 {s} 不再符合條件，開始清理...")
                 symbol_state.pop(s, None)
                 price_history.pop(s, None)
                 oi_history.pop(s, None)
                 last_alert.pop(s, None)
+                log.info(f"幣種 {s} 已清理")   
 
     except Exception as e:
         log.error(f"初始化幣種失敗: {e}")
@@ -418,65 +420,64 @@ async def handle_price_websocket(client, batch_symbols):
                             state[f"ema_{interval}"][45] = talib.EMA(closes, timeperiod=45)[-1]
                             state[f"ema_{interval}"][60] = talib.EMA(closes, timeperiod=60)[-1]
                 except asyncio.CancelledError:
+                    log.info(f"批次 WebSocket 收到取消信號 | batch_symbols={batch_symbols[:3]}...")
                     break
                 except Exception as e:
-                    log.exception(
-                        f"接收錯誤: {e} | last_stream={last_stream_name} last_symbol={last_symbol} last_interval={last_interval}"
+                    # 記錄錯誤但不退出，繼續嘗試接收下一筆訊息
+                    log.error(
+                        f"接收訊息時發生錯誤（繼續運行）: {e} | last_stream={last_stream_name} last_symbol={last_symbol} last_interval={last_interval}"
                     )
-                    break
+                    # 短暫延遲避免錯誤循環
+                    await asyncio.sleep(0.1)
+            # 退出 while 循環後，準備關閉 WebSocket
+            log.info(f"批次 WebSocket 退出接收循環，準備關閉連線 | batch_symbols={batch_symbols[:3]}...")
+    except asyncio.CancelledError:
+        log.info(f"批次 WebSocket 外層被取消 | batch_symbols={batch_symbols[:3]}...")
+        raise
     except Exception as e:
         log.exception(f"Price WebSocket 連線失敗: {e} | batch_symbols={batch_symbols}")
+    finally:
+        log.info(f"批次 WebSocket 已完全退出 | batch_symbols={batch_symbols[:3]}...")
 
 async def monitor_price_websocket(client):
-    """啟動並監控所有 symbols 的 WebSocket 任務，並依固定週期重啟。
-
-    目的：避免 Docker/網路環境下 WebSocket 長時間執行造成卡死或半斷線。
+    """啟動並監控所有 symbols 的 WebSocket 任務。
 
     行為：
     - 依 `BATCH_SIZE` 分批啟動多個 `handle_price_websocket` task
-    - 每 `RESTART_INTERVAL` 秒 cancel 這些 task，並等待最多 60 秒收尾
-    - 若收尾逾時，記錄 log 後直接進入下一輪重啟
+    - 持續運行直到程式結束（running=False）
+    - 若某個批次異常退出，會記錄錯誤並等待其他批次
     """
     log.info("啟動 Price WebSocket 監控...")
-    while running:
-        try:
-            symbols = list(symbol_state.keys())
-            if not symbols:
-                log.warning("symbol_state 為空，10 秒後重試...")
-                await asyncio.sleep(10)
-                continue
+    
+    symbols = list(symbol_state.keys())
+    if not symbols:
+        log.error("symbol_state 為空，無法啟動 WebSocket 監控")
+        return
 
-            batches = [symbols[i:i + BATCH_SIZE] for i in range(0, len(symbols), BATCH_SIZE)]
-            log.info(f"🚀 啟動 {len(batches)} 個 Price WebSocket 批次（共 {len(symbols)} 幣）")
+    batches = [symbols[i:i + BATCH_SIZE] for i in range(0, len(symbols), BATCH_SIZE)]
+    log.info(f"🚀 啟動 {len(batches)} 個 Price WebSocket 批次（共 {len(symbols)} 幣）")
 
-            tasks = []
-            for idx, batch in enumerate(batches):
-                tasks.append(asyncio.create_task(handle_price_websocket(client, batch)))
+    tasks = []
+    for idx, batch in enumerate(batches):
+        tasks.append(asyncio.create_task(handle_price_websocket(client, batch)))
 
-            log.info(f"✅ 所有 {len(tasks)} 個批次已啟動，持續監控中...")
+    log.info(f"✅ 所有 {len(tasks)} 個批次已啟動，持續監控中...")
 
-            # 定期重啟（例如每15分鐘）
-            await asyncio.sleep(RESTART_INTERVAL)
-
-            log.info("♻️ 開始重啟所有 Price WebSocket 連線...")
-            for t in tasks:
-                t.cancel()
-            results = None
-            try:
-                results = await asyncio.wait_for(
-                    asyncio.gather(*tasks, return_exceptions=True),
-                    timeout=60,
-                )
-            except asyncio.TimeoutError:
-                pending_count = sum(1 for t in tasks if not t.done())
-                log.error(f"⚠️ Price WebSocket 重啟等待逾時，仍有 {pending_count}/{len(tasks)} 個批次未結束，將直接進入下一輪重啟")
-
-            if results is not None:
-                for r in results:
-                    if isinstance(r, Exception) and not isinstance(r, asyncio.CancelledError):
-                        log.exception(f"Price WebSocket 批次結束時回傳例外: {r}")
-            log.info("🔄 所有批次已結束，準備重新啟動...")
-
-        except Exception as e:
-            log.exception(f"Price WebSocket 總錯誤: {e}")
-            await asyncio.sleep(10)
+    try:
+        # 等待所有任務完成（正常情況下會持續運行直到程式結束）
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # 檢查是否有異常
+        exception_count = 0
+        for idx, r in enumerate(results):
+            if isinstance(r, Exception) and not isinstance(r, asyncio.CancelledError):
+                exception_count += 1
+                log.error(f"批次 {idx} 異常退出: {type(r).__name__}: {r}")
+        
+        if exception_count > 0:
+            log.warning(f"⚠️ 共 {exception_count} 個批次異常退出")
+        else:
+            log.info("所有 WebSocket 批次已正常結束")
+            
+    except Exception as e:
+        log.exception(f"Price WebSocket 監控發生錯誤: {e}")
