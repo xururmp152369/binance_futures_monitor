@@ -54,31 +54,66 @@ def _check_pump_candle(candle: tuple) -> bool:
     return (close - open_) / open_ * 100 >= models.runtime_config["PUMP_THRESHOLD"]
 
 
+def _recalc_consolidation_range(symbol: str, current_open_time_ms: int) -> tuple[float, float] | None:
+    """計算滾動 CONSOLIDATION_MIN_HOURS 視窗內的盤整頂底。
+
+    從 kline_4h_ohlc 取出在 (current_open_time - CONSOLIDATION_MIN_HOURS) 之後的所有 K 棒，
+    回傳 (consolidation_high, consolidation_low)。
+    """
+    ohlc = models.symbol_state.get(symbol, {}).get("kline_4h_ohlc")
+    if not ohlc:
+        return None
+    window_start = current_open_time_ms / 1000 - models.runtime_config["CONSOLIDATION_MIN_HOURS"] * 3600
+    relevant = [c for c in ohlc if c[0] / 1000 >= window_start]
+    if not relevant:
+        return None
+    return max(c[2] for c in relevant), min(c[3] for c in relevant)
+
+
 def on_new_4h_candle(symbol: str, candle: tuple) -> None:
-    """處理新 4h K 棒收盤：偵測拉漲、更新盤整頂部、驅動狀態轉移。
+    """處理新 4h K 棒收盤：偵測拉漲、更新盤整範圍、驅動狀態轉移。
 
     candle: (open_time_ms, open, high, low, close)
     在 handle_price_websocket 的 @kline_4h 收盤段呼叫。
     """
     st = get_or_init_strategy_state(symbol)
     open_time_ms, open_, high, low, close = candle
+    current_ts = open_time_ms / 1000
 
     if st["phase"] != StrategyPhase.IDLE:
-        # 廢棄檢查：任何 4h K 棒的 low 跌破盤整底部
-        if low < st["consolidation_low"]:
-            reset_to_idle(
-                symbol,
-                f"4h K low={low:.6f} < 盤整底部={st['consolidation_low']:.6f}",
-            )
-            return
+        is_new_pump = _check_pump_candle(candle)
 
-        # 更新盤整頂部（取所有後續 4h K 高點的最大值）
-        if high > st["consolidation_high"]:
-            st["consolidation_high"] = high
+        if is_new_pump:
+            # 新拉漲 K 棒：更新基準資料，重置盤整計時回 TRACKING
+            pct = (close - open_) / open_ * 100
+            st["pump_candle_open"]       = open_
+            st["pump_candle_close"]      = close
+            st["pump_candle_low"]        = low
+            st["pump_candle_high"]       = high
+            st["pump_candle_time"]       = current_ts
+            st["consolidation_start_ts"] = current_ts
+            st["phase"]                  = StrategyPhase.TRACKING
+            log.info(
+                f"[策略] {symbol} 偵測到新拉漲 K 棒 → 重置為 TRACKING | "
+                f"{open_:.6f}→{close:.6f} (+{pct:.1f}%)"
+            )
+        else:
+            # 廢棄檢查：非拉漲 K 棒的 low 跌破現有盤整底部
+            if low < st["consolidation_low"]:
+                reset_to_idle(
+                    symbol,
+                    f"4h K low={low:.6f} < 盤整底部={st['consolidation_low']:.6f}",
+                )
+                return
+
+        # 動態更新盤整頂底（滾動 CONSOLIDATION_MIN_HOURS 視窗）
+        range_result = _recalc_consolidation_range(symbol, open_time_ms)
+        if range_result:
+            st["consolidation_high"], st["consolidation_low"] = range_result
 
         # TRACKING → READY：檢查是否達到最低盤整時數
         if st["phase"] == StrategyPhase.TRACKING:
-            elapsed_h = (open_time_ms / 1000 - st["consolidation_start_ts"]) / 3600
+            elapsed_h = (current_ts - st["consolidation_start_ts"]) / 3600
             if elapsed_h >= models.runtime_config["CONSOLIDATION_MIN_HOURS"]:
                 st["phase"] = StrategyPhase.READY
                 log.info(
@@ -96,10 +131,15 @@ def on_new_4h_candle(symbol: str, candle: tuple) -> None:
         st["pump_candle_close"]      = close
         st["pump_candle_low"]        = low
         st["pump_candle_high"]       = high
-        st["pump_candle_time"]       = open_time_ms / 1000
-        st["consolidation_low"]      = low
-        st["consolidation_high"]     = high
-        st["consolidation_start_ts"] = open_time_ms / 1000
+        st["pump_candle_time"]       = current_ts
+        st["consolidation_start_ts"] = current_ts
+        # 初始化盤整範圍（滾動視窗，包含本根 K 棒）
+        range_result = _recalc_consolidation_range(symbol, open_time_ms)
+        if range_result:
+            st["consolidation_high"], st["consolidation_low"] = range_result
+        else:
+            st["consolidation_high"] = high
+            st["consolidation_low"]  = low
         log.info(
             f"[策略] {symbol} IDLE → TRACKING | "
             f"4h 拉漲 {open_:.6f}→{close:.6f} (+{pct:.1f}%)"
