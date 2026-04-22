@@ -44,37 +44,27 @@ def reset_to_idle(symbol: str, reason: str = "") -> None:
 
 
 def _check_pump_candle(candle: tuple) -> bool:
-    """單根 4h K 棒是否符合拉漲條件：(close-open)/open >= PUMP_THRESHOLD%。
+    """單根 4h K 棒是否符合拉漲條件：陽線 + 低到高幅度 >= PUMP_THRESHOLD%。
 
     candle: (open_time_ms, open, high, low, close)
+    採用 (high - low) / low 衡量整根 K 棒的拉升幅度，涵蓋延伸走勢。
     """
-    _, open_, _high, _low, close = candle
-    if open_ <= 0:
+    _, open_, high, low, close = candle
+    if low <= 0:
         return False
-    return (close - open_) / open_ * 100 >= models.runtime_config["PUMP_THRESHOLD"]
-
-
-def _recalc_consolidation_range(symbol: str, current_open_time_ms: int) -> tuple[float, float] | None:
-    """計算滾動 CONSOLIDATION_MIN_HOURS 視窗內的盤整頂底。
-
-    從 kline_4h_ohlc 取出在 (current_open_time - CONSOLIDATION_MIN_HOURS) 之後的所有 K 棒，
-    回傳 (consolidation_high, consolidation_low)。
-    """
-    ohlc = models.symbol_state.get(symbol, {}).get("kline_4h_ohlc")
-    if not ohlc:
-        return None
-    window_start = current_open_time_ms / 1000 - models.runtime_config["CONSOLIDATION_MIN_HOURS"] * 3600
-    relevant = [c for c in ohlc if c[0] / 1000 >= window_start]
-    if not relevant:
-        return None
-    return max(c[2] for c in relevant), min(c[3] for c in relevant)
+    return close > open_ and (high - low) / low * 100 >= models.runtime_config["PUMP_THRESHOLD"]
 
 
 def on_new_4h_candle(symbol: str, candle: tuple) -> None:
-    """處理新 4h K 棒收盤：偵測拉漲、更新盤整範圍、驅動狀態轉移。
+    """處理新 4h K 棒收盤：偵測拉漲、追蹤延伸走勢、驅動狀態轉移。
+
+    邏輯：
+    1. 偵測到拉漲 K 棒 → TRACKING，設定底部（固定）與初始頂部
+    2. 後續每根 4h K 棒創新高 → 更新頂部並重置盤整計時（延伸中）
+    3. 停止創新高且累積時間 >= CONSOLIDATION_MIN_HOURS → READY
+    4. 有新拉漲 K 棒 → 以新拉漲基準重置所有資料回 TRACKING
 
     candle: (open_time_ms, open, high, low, close)
-    在 handle_price_websocket 的 @kline_4h 收盤段呼叫。
     """
     st = get_or_init_strategy_state(symbol)
     open_time_ms, open_, high, low, close = candle
@@ -84,13 +74,15 @@ def on_new_4h_candle(symbol: str, candle: tuple) -> None:
         is_new_pump = _check_pump_candle(candle)
 
         if is_new_pump:
-            # 新拉漲 K 棒：更新基準資料，重置盤整計時回 TRACKING
+            # 符合拉漲條件：以新 K 棒為基準，完整重置所有資料
             pct = (close - open_) / open_ * 100
             st["pump_candle_open"]       = open_
             st["pump_candle_close"]      = close
             st["pump_candle_low"]        = low
             st["pump_candle_high"]       = high
             st["pump_candle_time"]       = current_ts
+            st["consolidation_low"]      = low    # 底部固定為本 K 低點
+            st["consolidation_high"]     = high   # 頂部初始為本 K 高點
             st["consolidation_start_ts"] = current_ts
             st["phase"]                  = StrategyPhase.TRACKING
             log.info(
@@ -98,20 +90,26 @@ def on_new_4h_candle(symbol: str, candle: tuple) -> None:
                 f"{open_:.6f}→{close:.6f} (+{pct:.1f}%)"
             )
         else:
-            # 廢棄檢查：非拉漲 K 棒的 low 跌破現有盤整底部
-            if low < st["consolidation_low"]:
+            # 廢棄檢查：低點跌破拉漲 K 棒低點（固定失效線）
+            if low < st["pump_candle_low"]:
                 reset_to_idle(
                     symbol,
-                    f"4h K low={low:.6f} < 盤整底部={st['consolidation_low']:.6f}",
+                    f"4h K low={low:.6f} < 拉漲 K 低點={st['pump_candle_low']:.6f}",
                 )
                 return
 
-        # 動態更新盤整頂底（滾動 CONSOLIDATION_MIN_HOURS 視窗）
-        range_result = _recalc_consolidation_range(symbol, open_time_ms)
-        if range_result:
-            st["consolidation_high"], st["consolidation_low"] = range_result
+            # 延伸走勢：創新高 → 更新頂部並重置盤整計時
+            if high > st["consolidation_high"]:
+                prev_phase = st["phase"]
+                st["consolidation_high"]     = high
+                st["consolidation_start_ts"] = current_ts
+                st["phase"]                  = StrategyPhase.TRACKING
+                note = "（原 READY 回退）" if prev_phase == StrategyPhase.READY else ""
+                log.info(
+                    f"[策略] {symbol} 延伸新高 {high:.6f}{note} → 盤整計時重置"
+                )
 
-        # TRACKING → READY：檢查是否達到最低盤整時數
+        # TRACKING → READY：從最後一次創新高起，已盤整 >= CONSOLIDATION_MIN_HOURS
         if st["phase"] == StrategyPhase.TRACKING:
             elapsed_h = (current_ts - st["consolidation_start_ts"]) / 3600
             if elapsed_h >= models.runtime_config["CONSOLIDATION_MIN_HOURS"]:
@@ -132,14 +130,9 @@ def on_new_4h_candle(symbol: str, candle: tuple) -> None:
         st["pump_candle_low"]        = low
         st["pump_candle_high"]       = high
         st["pump_candle_time"]       = current_ts
+        st["consolidation_low"]      = low    # 底部固定為本 K 低點
+        st["consolidation_high"]     = high   # 頂部初始為本 K 高點
         st["consolidation_start_ts"] = current_ts
-        # 初始化盤整範圍（滾動視窗，包含本根 K 棒）
-        range_result = _recalc_consolidation_range(symbol, open_time_ms)
-        if range_result:
-            st["consolidation_high"], st["consolidation_low"] = range_result
-        else:
-            st["consolidation_high"] = high
-            st["consolidation_low"]  = low
         log.info(
             f"[策略] {symbol} IDLE → TRACKING | "
             f"4h 拉漲 {open_:.6f}→{close:.6f} (+{pct:.1f}%)"
@@ -187,21 +180,29 @@ def on_new_15m_candle(symbol: str, candle: tuple) -> dict | None:
     if now - st["last_alert_ts"] < models.runtime_config["STRATEGY_COOLDOWN"]:
         return None
 
+    risk   = close - low
+    target = close + risk * 1.5
+
     st["last_alert_ts"]    = now
     st["last_signal_type"] = "type1"
 
     log.info(
         f"[策略-T1] {symbol} 觸發！close={close:.6f} > top={top:.6f} | "
-        f"量能 {vol_ratio:.1f}× | 止損={low:.6f}"
+        f"量能 {vol_ratio:.1f}× | 止損={low:.6f} | 目標={target:.6f}"
     )
     return {
-        "type":      "type1",
-        "symbol":    symbol,
-        "close":     close,
-        "stop_loss": low,
-        "top":       top,
-        "bottom":    st["consolidation_low"],
-        "vol_ratio": vol_ratio,
+        "type":               "type1",
+        "symbol":             symbol,
+        "close":              close,
+        "stop_loss":          low,
+        "top":                top,
+        "bottom":             st["consolidation_low"],
+        "target":             target,
+        "vol_ratio":          vol_ratio,
+        "pump_time":          st["pump_candle_time"],
+        "pump_high":          st["pump_candle_high"],
+        "pump_low":           st["pump_candle_low"],
+        "candle_open_time_ms": open_time_ms,
     }
 
 
@@ -215,13 +216,13 @@ def on_new_1h_candle(symbol: str, candle: tuple) -> dict | None:
     if not st or st["phase"] != StrategyPhase.READY:
         return None
 
-    _open_time_ms, _open, _high, low, close = candle
+    open_time_ms, open_, _high, low, close = candle
 
-    # 廢棄檢查：1h K low 跌破盤整底部
-    if low < st["consolidation_low"]:
+    # 廢棄檢查：1h K low 跌破拉漲 K 棒低點
+    if low < st["pump_candle_low"]:
         reset_to_idle(
             symbol,
-            f"1h K low={low:.6f} < 盤整底部={st['consolidation_low']:.6f}",
+            f"1h K low={low:.6f} < 拉漲 K 低點={st['pump_candle_low']:.6f}",
         )
         return None
 
@@ -240,19 +241,23 @@ def on_new_1h_candle(symbol: str, candle: tuple) -> dict | None:
     if touched_ema is None:
         return None
 
-    # 條件 2：有效收針（close > low × (1 + WICK_THRESHOLD%)）
+    # 條件 2：多頭趨勢確認（開盤價高於觸碰的 EMA，確認是回踩而非空頭）
+    if open_ <= touched_ema[1]:
+        return None
+
+    # 條件 3：有效收針（close > low × (1 + WICK_THRESHOLD%)）
     wick_min = low * (1 + models.runtime_config["WICK_THRESHOLD"] / 100)
     if close <= wick_min:
         return None
 
-    # 條件 3：盈虧比 >= STRATEGY_RR_MIN
-    top    = st["consolidation_high"]
-    bottom = st["consolidation_low"]
-    if close <= bottom:
+    # 條件 4：盈虧比 >= STRATEGY_RR_MIN（以拉漲 K 棒低點為止損）
+    top       = st["consolidation_high"]
+    stop_loss = st["pump_candle_low"]
+    if close <= stop_loss:
         return None
 
     profit = top - close
-    risk   = close - bottom
+    risk   = close - stop_loss
     if risk <= 0:
         return None
 
@@ -268,26 +273,32 @@ def on_new_1h_candle(symbol: str, candle: tuple) -> dict | None:
     if now - st["last_alert_ts"] < models.runtime_config["STRATEGY_COOLDOWN"]:
         return None
 
+    target   = close + risk * 1.5
     wick_pct = (close - low) / low * 100
     st["last_alert_ts"]    = now
     st["last_signal_type"] = "type2"
 
     log.info(
         f"[策略-T2] {symbol} 觸發！close={close:.6f} | "
-        f"觸碰 EMA{touched_ema[0]}(4h)={touched_ema[1]:.6f} | "
-        f"收針 {wick_pct:.1f}% | 盈虧比 {rr:.2f} | 止損={bottom:.6f}"
+        f"觸碰 EMA{touched_ema[0]}(4h)={touched_ema[1]:.6f} | open={open_:.6f} | "
+        f"收針 {wick_pct:.1f}% | 盈虧比 {rr:.2f} | 止損={stop_loss:.6f} | 目標={target:.6f}"
     )
     return {
-        "type":        "type2",
-        "symbol":      symbol,
-        "close":       close,
-        "low":         low,
-        "stop_loss":   bottom,
-        "top":         top,
-        "bottom":      bottom,
-        "rr":          rr,
-        "wick_pct":    wick_pct,
-        "touched_ema": touched_ema,  # (period, value)
+        "type":               "type2",
+        "symbol":             symbol,
+        "close":              close,
+        "low":                low,
+        "stop_loss":          stop_loss,
+        "top":                top,
+        "bottom":             stop_loss,
+        "target":             target,
+        "rr":                 rr,
+        "wick_pct":           wick_pct,
+        "touched_ema":        touched_ema,
+        "pump_time":          st["pump_candle_time"],
+        "pump_high":          st["pump_candle_high"],
+        "pump_low":           st["pump_candle_low"],
+        "candle_open_time_ms": open_time_ms,
     }
 
 
@@ -305,10 +316,10 @@ def check_invalidation_realtime(symbol: str) -> bool:
     if price is None:
         return False
 
-    if price < st["consolidation_low"]:
+    if price < st["pump_candle_low"]:
         reset_to_idle(
             symbol,
-            f"即時價格 {price:.6f} < 盤整底部 {st['consolidation_low']:.6f}",
+            f"即時價格 {price:.6f} < 拉漲 K 低點 {st['pump_candle_low']:.6f}",
         )
         return True
     return False
