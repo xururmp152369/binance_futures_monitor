@@ -1,11 +1,12 @@
 import asyncio
 import sys
+from pathlib import Path
 from datetime import datetime, timedelta, time as dt_time
 from .setting import models
 from .command import bot_enum
 from binance import AsyncClient
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from .setting.config import BOT_TOKEN
 from .setting.models import running, symbol_state
 from .datacenter.binance_opendata import initialize_symbols, monitor_price_websocket
@@ -79,15 +80,21 @@ async def main():
 
     log.info("啟動 Binance 異動監控 Bot...")
 
+    # 確保使用者設定檔目錄存在
+    Path("data/users").mkdir(parents=True, exist_ok=True)
+
     # 建立 Application
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_error_handler(error_handler)
     models.bot = application.bot
-    # 註冊指令（用你自己的 enum）
-    application.add_handler(CommandHandler(bot_enum.TGBotCommand.COMMAND, command.command))
-    application.add_handler(CommandHandler(bot_enum.TGBotCommand.SEARCH, command.search))
-    application.add_handler(CommandHandler(bot_enum.TGBotCommand.STRATEGY, command.strategy))
-    application.add_handler(CommandHandler(bot_enum.TGBotCommand.CONFIG, command.config))
+    # 註冊指令
+    application.add_handler(CommandHandler(bot_enum.TGBotCommand.COMMAND,   command.command))
+    application.add_handler(CommandHandler(bot_enum.TGBotCommand.SEARCH,    command.search))
+    application.add_handler(CommandHandler(bot_enum.TGBotCommand.STRATEGY,  command.strategy))
+    application.add_handler(CommandHandler(bot_enum.TGBotCommand.CONFIG,    command.config))
+    application.add_handler(CommandHandler(bot_enum.TGBotCommand.SETUP,     command.setup))
+    application.add_handler(CommandHandler(bot_enum.TGBotCommand.MY_CONFIG, command.my_config))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, command.handle_json_message))
 
     # Binance client
     client = await AsyncClient.create()

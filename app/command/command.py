@@ -1,11 +1,16 @@
+import json
 from datetime import datetime
 from telegram import Update
-from telegram.ext import (
-    ContextTypes,
-)
+from telegram.ext import ContextTypes
 from ..setting.models import symbol_state, price_history, strategy_state, runtime_config
 from ..strategy.state_machine import StrategyPhase
 from ..extension.utils import reply_text_long
+from ..user.user_config import (
+    CONFIG_TEMPLATE_TEXT,
+    get_user_config,
+    save_user_config,
+    validate_config,
+)
 
 async def command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/command 指令：回覆可用指令說明。"""
@@ -18,6 +23,8 @@ async def command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/strategy <coin> 查看策略狀態，ex: btc\n"
         "/config 查看所有可調整參數\n"
         "/config set PARAM VALUE 修改參數，ex: /config set PUMP_THRESHOLD 8\n"
+        "/setup 取得自動開單設定範本\n"
+        "/myconfig 查看目前個人設定\n"
         "試試看吧！"
     )
 
@@ -128,6 +135,96 @@ async def strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(f"上次訊號：{last_type} ({last_str})")
 
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+async def setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/setup 指令：傳送個人設定範本給使用者。"""
+    await update.message.reply_text(CONFIG_TEMPLATE_TEXT, parse_mode="Markdown")
+
+
+async def my_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/myconfig 指令：顯示目前個人設定摘要。"""
+    user_id = update.effective_user.id
+    cfg = get_user_config(user_id)
+
+    if cfg is None:
+        await update.message.reply_text(
+            "尚未設定，請使用 /setup 取得範本填寫後傳回。"
+        )
+        return
+
+    def _mask(key: str) -> str:
+        val = cfg.get(key, "")
+        return val[:4] + "****" if len(val) > 4 else "****"
+
+    tp_lines = "\n".join(
+        f"  {i}. {e['RR_RATIO']}R → 平倉 {e['PERCENT']}%"
+        for i, e in enumerate(cfg.get("TP_STRATEGY", []), 1)
+    )
+    risk_label = "固定投入金額" if cfg.get("RISK_TYPE") == 0 else "固定損失金額"
+    blacklist  = cfg.get("SYMBOL_BLACKLIST") or []
+    blacklist_str = "、".join(blacklist) if blacklist else "（無）"
+
+    text = (
+        f"📄 *你的目前設定*\n\n"
+        f"API Key：`{_mask('API_KEY')}`\n"
+        f"Secret Key：`{_mask('SECRET_KEY')}`\n\n"
+        f"策略：`{'、'.join(cfg.get('STRATEGY', []))}`\n"
+        f"風險模式：{risk_label}\n"
+        f"投入/損失金額：`{cfg.get('RISK_AMOUNT')} USDT`\n"
+        f"槓桿：`{cfg.get('RISK_LEVERAGE')}x`\n\n"
+        f"止盈策略：\n{tp_lines}\n\n"
+        f"部位上限：`{cfg.get('ORDER_LIMIT')} 筆`\n"
+        f"同幣種加倉：`{'是' if cfg.get('ADD_SAME_SYMBOL') else '否'}`\n"
+        f"黑名單：{blacklist_str}\n"
+        f"自動開單：`{'開啟' if cfg.get('ENABLED') else '關閉'}`"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def handle_json_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """接收使用者傳送的 JSON 文字，驗證後儲存為個人設定。"""
+    text = (update.message.text or "").strip()
+    if not text.startswith("{"):
+        return
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        await update.message.reply_text(
+            f"❌ JSON 格式錯誤，請確認格式後重新傳送。\n錯誤位置：{e}"
+        )
+        return
+
+    ok, errors = validate_config(data)
+    if not ok:
+        error_lines = "\n".join(f"• {e}" for e in errors)
+        await update.message.reply_text(
+            f"❌ 設定有誤，請修正後重新傳送：\n\n{error_lines}",
+            parse_mode="Markdown",
+        )
+        return
+
+    user_id = update.effective_user.id
+    save_user_config(user_id, data)
+
+    tp_lines = "\n".join(
+        f"  {i}. {e['RR_RATIO']}R → 平倉 {e['PERCENT']}%"
+        for i, e in enumerate(data.get("TP_STRATEGY", []), 1)
+    )
+    risk_label = "固定投入金額" if data.get("RISK_TYPE") == 0 else "固定損失金額"
+
+    await update.message.reply_text(
+        f"✅ *設定已儲存！*\n\n"
+        f"策略：`{'、'.join(data.get('STRATEGY', []))}`\n"
+        f"風險模式：{risk_label}\n"
+        f"投入/損失金額：`{data.get('RISK_AMOUNT')} USDT`\n"
+        f"槓桿：`{data.get('RISK_LEVERAGE')}x`\n\n"
+        f"止盈策略：\n{tp_lines}\n\n"
+        f"部位上限：`{data.get('ORDER_LIMIT')} 筆`\n"
+        f"自動開單：`{'開啟' if data.get('ENABLED') else '關閉'}`",
+        parse_mode="Markdown",
+    )
+
 
 async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/s 指令：輸出指定幣種的價格歷史快照。

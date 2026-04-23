@@ -5,7 +5,9 @@ class TGBotCommand(StrEnum):
 
     用集中式 enum 管理指令字串，避免在多處硬編碼導致不一致。
     """
-    COMMAND  = "command"
-    SEARCH   = "s"
-    STRATEGY = "strategy"
-    CONFIG   = "config"
+    COMMAND   = "command"
+    SEARCH    = "s"
+    STRATEGY  = "strategy"
+    CONFIG    = "config"
+    SETUP     = "setup"
+    MY_CONFIG = "myconfig"
