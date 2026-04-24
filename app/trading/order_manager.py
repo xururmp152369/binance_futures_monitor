@@ -113,7 +113,7 @@ async def _place_orders_for_user(cfg: dict, symbol: str, signal: dict) -> None:
         fill_price = float(order.get("avgPrice") or 0) or entry_price
         log.info(f"[自動開單] {symbol} 市價開倉成功 qty={qty} fill={fill_price:.6f}")
 
-        # 止損單（明確數量，不依賴 closePosition）
+        # 止損單（明確數量，reduceOnly 確保只平倉不加倉）
         try:
             await client.futures_create_order(
                 symbol=symbol,
@@ -121,11 +121,15 @@ async def _place_orders_for_user(cfg: dict, symbol: str, signal: dict) -> None:
                 type="STOP_MARKET",
                 stopPrice=round(stop_loss, 8),
                 quantity=qty,
+                reduceOnly=True,
                 workingType="MARK_PRICE",
             )
             log.info(f"[自動開單] {symbol} 止損掛出 stopPrice={stop_loss:.6f} qty={qty}")
         except Exception as e:
-            log.error(f"[自動開單] {symbol} 止損掛出失敗: {e}")
+            if "-4120" in str(e):
+                log.warning(f"[自動開單] {symbol} 止損不支援（此幣種需 Algo API），已略過: {e}")
+            else:
+                log.error(f"[自動開單] {symbol} 止損掛出失敗: {e}")
 
         # 止盈單（分批，各自獨立）
         tp_strategy = cfg.get("TP_STRATEGY", [])
@@ -145,13 +149,17 @@ async def _place_orders_for_user(cfg: dict, symbol: str, signal: dict) -> None:
                     type="TAKE_PROFIT_MARKET",
                     stopPrice=round(tp_price, 8),
                     quantity=tp_qty,
+                    reduceOnly=True,
                     workingType="MARK_PRICE",
                 )
                 log.info(
                     f"[自動開單] {symbol} 止盈{i + 1} stopPrice={tp_price:.6f} qty={tp_qty}"
                 )
             except Exception as e:
-                log.error(f"[自動開單] {symbol} 止盈{i + 1} 掛出失敗: {e}")
+                if "-4120" in str(e):
+                    log.warning(f"[自動開單] {symbol} 止盈{i + 1} 不支援（此幣種需 Algo API），已略過: {e}")
+                else:
+                    log.error(f"[自動開單] {symbol} 止盈{i + 1} 掛出失敗: {e}")
 
     except Exception as e:
         log.error(f"[自動開單] {symbol} 開單失敗: {e}")
