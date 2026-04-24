@@ -20,6 +20,9 @@ _codeExecution.log
 *.env
 *.secrets
 
+# 使用者設定（含 API Key，不得上傳）
+data/users/
+
 # 系統與 IDE 檔案
 .DS_Store
 Thumbs.db

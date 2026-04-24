@@ -181,8 +181,17 @@ async def my_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
+_ALL_CONFIG_KEYS = {
+    "API_KEY", "SECRET_KEY", "STRATEGY", "RISK_TYPE", "RISK_AMOUNT",
+    "RISK_LEVERAGE", "TP_STRATEGY", "ORDER_LIMIT", "ADD_SAME_SYMBOL",
+    "SYMBOL_BLACKLIST", "ENABLED",
+}
+
 async def handle_json_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """接收使用者傳送的 JSON 文字，驗證後儲存為個人設定。"""
+    """接收使用者傳送的 JSON 文字，驗證後儲存為個人設定。
+
+    支援部分更新：若 JSON 缺少欄位且已有現有設定，則 merge 後儲存。
+    """
     text = (update.message.text or "").strip()
     if not text.startswith("{"):
         return
@@ -195,6 +204,19 @@ async def handle_json_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
+    user_id = update.effective_user.id
+    is_partial = not _ALL_CONFIG_KEYS.issubset(data.keys())
+
+    if is_partial:
+        existing = get_user_config(user_id)
+        if existing is None:
+            await update.message.reply_text(
+                "❌ 尚無設定檔，部分更新需先有完整設定。\n請用 /setup 取得範本填寫後傳送。"
+            )
+            return
+        updated_keys = list(data.keys())
+        data = {**existing, **data}  # incoming 欄位覆蓋既有設定
+
     ok, errors = validate_config(data)
     if not ok:
         error_lines = "\n".join(f"• {e}" for e in errors)
@@ -204,8 +226,15 @@ async def handle_json_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
-    user_id = update.effective_user.id
     save_user_config(user_id, data)
+
+    if is_partial:
+        keys_str = "、".join(f"`{k}`" for k in updated_keys)
+        await update.message.reply_text(
+            f"✅ *已更新以下欄位：*\n{keys_str}\n\n輸入 /myconfig 查看完整設定。",
+            parse_mode="Markdown",
+        )
+        return
 
     tp_lines = "\n".join(
         f"  {i}. {e['RR_RATIO']}R → 平倉 {e['PERCENT']}%"
