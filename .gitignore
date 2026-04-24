@@ -21,7 +21,10 @@ _codeExecution.log
 *.secrets
 
 # 使用者設定（含 API Key，不得上傳）
-data/users/
+data/
+
+# Claude Code 本機設定（不屬於專案程式碼）
+.claude/
 
 # 系統與 IDE 檔案
 .DS_Store
