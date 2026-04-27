@@ -1,6 +1,7 @@
 import asyncio
 import json
 import math
+import time
 from pathlib import Path
 from binance import AsyncClient
 from ..extension.utils import setup_logging
@@ -35,16 +36,16 @@ def _calc_quantity(cfg: dict, entry_price: float, stop_loss: float) -> float:
         return risk_amount / sl_dist
 
 
-async def _get_qty_precision(client: AsyncClient, symbol: str) -> int:
-    """查詢幣種的下單數量精度（小數位數），失敗時預設 3。"""
+async def _get_precisions(client: AsyncClient, symbol: str) -> tuple[int, int]:
+    """回傳 (qty_precision, price_precision)，失敗時預設 (3, 2)。"""
     try:
         info = await client.futures_exchange_info()
         for s in info["symbols"]:
             if s["symbol"] == symbol:
-                return int(s.get("quantityPrecision", 3))
+                return int(s.get("quantityPrecision", 3)), int(s.get("pricePrecision", 2))
     except Exception as e:
-        log.warning(f"[自動開單] 無法取得 {symbol} 數量精度，使用預設 3: {e}")
-    return 3
+        log.warning(f"[自動開單] 無法取得 {symbol} 精度資訊，使用預設值: {e}")
+    return 3, 2
 
 
 async def _get_open_positions(client: AsyncClient) -> list[dict]:
@@ -92,52 +93,108 @@ async def _place_orders_for_user(cfg: dict, symbol: str, signal: dict) -> None:
         await client.futures_change_leverage(symbol=symbol, leverage=leverage)
         log.info(f"[自動開單] {symbol} 槓桿設為 {leverage}x")
 
+        # 無現有持倉才清除殘留條件單（加倉時保留原有 SL/TP，不中斷保護）
+        if symbol not in open_symbols:
+            try:
+                await client.futures_cancel_all_algo_open_orders(symbol=symbol)
+                log.info(f"[自動開單] {symbol} 已清除舊條件單")
+            except Exception as e:
+                log.warning(f"[自動開單] {symbol} 清除舊條件單失敗（忽略）: {e}")
+
         # 計算下單量
-        entry_price   = signal["close"]
-        stop_loss     = signal["stop_loss"]
-        qty_precision = await _get_qty_precision(client, symbol)
-        raw_qty       = _calc_quantity(cfg, entry_price, stop_loss)
-        qty           = _floor_to_precision(raw_qty, qty_precision)
+        entry_price                   = signal["close"]
+        stop_loss                     = signal["stop_loss"]
+        qty_precision, price_precision = await _get_precisions(client, symbol)
+        raw_qty                        = _calc_quantity(cfg, entry_price, stop_loss)
+        qty                            = _floor_to_precision(raw_qty, qty_precision)
 
         if qty <= 0:
             log.error(f"[自動開單] {symbol} 計算下單量無效 raw={raw_qty:.6f}，略過")
             return
 
-        # 市價開多
-        order      = await client.futures_create_order(
-            symbol=symbol,
-            side="BUY",
-            type="MARKET",
-            quantity=qty,
-        )
-        fill_price = float(order.get("avgPrice") or 0) or entry_price
-        log.info(f"[自動開單] {symbol} 市價開倉成功 qty={qty} fill={fill_price:.6f}")
+        # 市價開多（確認倉位成立後才設置 SL/TP，最多重試 5 次）
+        MAX_RETRIES = 5
+        fill_price = None
+        filled_qty = qty  # 預設用計算量，成交後以 executedQty 覆蓋
+        for attempt in range(1, MAX_RETRIES + 1):
+            order_id = f"cc_{symbol}_{int(time.time() * 1000)}"
+            try:
+                order = await client.futures_create_order(
+                    symbol=symbol,
+                    side="BUY",
+                    type="MARKET",
+                    quantity=qty,
+                    newClientOrderId=order_id,
+                )
+                fill_price = float(order.get("avgPrice") or 0) or entry_price
+                _exec = float(order.get("executedQty") or 0)
+                filled_qty = _floor_to_precision(
+                    _exec if _exec > 0 else qty, qty_precision
+                )
+                log.info(
+                    f"[自動開單] {symbol} 市價開倉成功 attempt={attempt}"
+                    f" filled_qty={filled_qty} fill={fill_price:.6f}"
+                )
+                break
+            except Exception as order_err:
+                if "-1007" not in str(order_err):
+                    log.error(f"[自動開單] {symbol} 開倉失敗: {order_err}")
+                    return
+                # -1007：逾時，用 newClientOrderId 查詢訂單確認真實狀態
+                log.warning(
+                    f"[自動開單] {symbol} 開倉逾時 (-1007) attempt={attempt}/{MAX_RETRIES}，查詢訂單..."
+                )
+                await asyncio.sleep(2)
+                try:
+                    queried = await client.futures_get_order(
+                        symbol=symbol, origClientOrderId=order_id
+                    )
+                    if queried.get("status") == "FILLED":
+                        fill_price = float(queried.get("avgPrice") or 0) or entry_price
+                        _exec = float(queried.get("executedQty") or 0)
+                        filled_qty = _floor_to_precision(
+                            _exec if _exec > 0 else qty, qty_precision
+                        )
+                        log.warning(
+                            f"[自動開單] {symbol} 逾時但訂單已成立"
+                            f" filled_qty={filled_qty} fill={fill_price:.6f}，繼續設 SL/TP"
+                        )
+                        break
+                    log.warning(
+                        f"[自動開單] {symbol} 訂單未成立 status={queried.get('status')}，重試開倉..."
+                    )
+                except Exception:
+                    log.warning(f"[自動開單] {symbol} 查詢訂單失敗，重試開倉...")
 
-        # 止損單（明確數量，reduceOnly 確保只平倉不加倉）
+        if fill_price is None:
+            log.error(f"[自動開單] {symbol} 重試 {MAX_RETRIES} 次後仍無法確認倉位，放棄")
+            return
+
+        # 等待倉位入帳後再掛條件單，避免 reduceOnly 因倉位尚未反映而被拒
+        await asyncio.sleep(1)
+
+        # 止損單（數量以實際成交量 filled_qty 為準）
         try:
             await client.futures_create_order(
                 symbol=symbol,
                 side="SELL",
                 type="STOP_MARKET",
-                stopPrice=round(stop_loss, 8),
-                quantity=qty,
+                stopPrice=round(stop_loss, price_precision),
+                quantity=filled_qty,
                 reduceOnly=True,
                 workingType="MARK_PRICE",
             )
-            log.info(f"[自動開單] {symbol} 止損掛出 stopPrice={stop_loss:.6f} qty={qty}")
+            log.info(f"[自動開單] {symbol} 止損掛出 stopPrice={stop_loss:.6f} qty={filled_qty}")
         except Exception as e:
-            if "-4120" in str(e):
-                log.warning(f"[自動開單] {symbol} 止損不支援（此幣種需 Algo API），已略過: {e}")
-            else:
-                log.error(f"[自動開單] {symbol} 止損掛出失敗: {e}")
+            log.error(f"[自動開單] {symbol} 止損掛出失敗: {e}")
 
-        # 止盈單（分批，各自獨立）
+        # 止盈單（分批，各自獨立，數量以實際成交量 filled_qty 為準）
         tp_strategy = cfg.get("TP_STRATEGY", [])
         for i, tp_entry in enumerate(tp_strategy):
             rr       = tp_entry["RR_RATIO"]
             pct      = tp_entry["PERCENT"]
             tp_price = fill_price + (fill_price - stop_loss) * rr
-            tp_qty   = _floor_to_precision(qty * pct / 100, qty_precision)
+            tp_qty   = _floor_to_precision(filled_qty * pct / 100, qty_precision)
 
             if tp_qty <= 0:
                 continue
@@ -147,7 +204,7 @@ async def _place_orders_for_user(cfg: dict, symbol: str, signal: dict) -> None:
                     symbol=symbol,
                     side="SELL",
                     type="TAKE_PROFIT_MARKET",
-                    stopPrice=round(tp_price, 8),
+                    stopPrice=round(tp_price, price_precision),
                     quantity=tp_qty,
                     reduceOnly=True,
                     workingType="MARK_PRICE",
@@ -156,10 +213,7 @@ async def _place_orders_for_user(cfg: dict, symbol: str, signal: dict) -> None:
                     f"[自動開單] {symbol} 止盈{i + 1} stopPrice={tp_price:.6f} qty={tp_qty}"
                 )
             except Exception as e:
-                if "-4120" in str(e):
-                    log.warning(f"[自動開單] {symbol} 止盈{i + 1} 不支援（此幣種需 Algo API），已略過: {e}")
-                else:
-                    log.error(f"[自動開單] {symbol} 止盈{i + 1} 掛出失敗: {e}")
+                log.error(f"[自動開單] {symbol} 止盈{i + 1} 掛出失敗: {e}")
 
     except Exception as e:
         log.error(f"[自動開單] {symbol} 開單失敗: {e}")
