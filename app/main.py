@@ -24,7 +24,10 @@ async def daily_restart_scheduler(client, restart_hour=4):
     while models.running:
         try:
             now = datetime.now()
-            target_time = now.replace(day=now.day - now.weekday() + 7, hour=restart_hour, minute=0, second=0, microsecond=0)
+            # 計算到下個週一凌晨的時間差（weekday: 0=週一, 6=週日）
+            days_until_monday = (7 - now.weekday()) % 7 or 7
+            target_date = (now + timedelta(days=days_until_monday)).date()
+            target_time = datetime.combine(target_date, dt_time(restart_hour, 0, 0))
                         
             wait_seconds = (target_time - now).total_seconds()
             log.info(f"⏰ 下次重啟時間：{target_time.strftime('%Y-%m-%d %H:%M:%S')} (約 {wait_seconds/3600:.1f} 小時後)")
