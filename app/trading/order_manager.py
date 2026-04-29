@@ -173,45 +173,59 @@ async def _place_orders_for_user(cfg: dict, symbol: str, signal: dict) -> None:
         # 等待倉位入帳後再掛條件單，避免 reduceOnly 因倉位尚未反映而被拒
         await asyncio.sleep(1)
 
-        # 止損單（數量以實際成交量 filled_qty 為準）
+        # 止損單：closePosition=True，觸價時平全倉，不依賴數量精度
         try:
             await client.futures_create_order(
                 symbol=symbol,
                 side="SELL",
                 type="STOP_MARKET",
                 stopPrice=round(stop_loss, price_precision),
-                quantity=filled_qty,
-                reduceOnly=True,
+                closePosition=True,
                 workingType="MARK_PRICE",
             )
-            log.info(f"[自動開單] {symbol} 止損掛出 stopPrice={stop_loss:.6f} qty={filled_qty}")
+            log.info(f"[自動開單] {symbol} 止損掛出 stopPrice={stop_loss:.6f} (closePosition)")
         except Exception as e:
             log.error(f"[自動開單] {symbol} 止損掛出失敗: {e}")
 
-        # 止盈單（分批，各自獨立，數量以實際成交量 filled_qty 為準）
+        # 止盈單（分批）
+        # 最後一筆用 closePosition=True 確保完全平倉；其餘用數量單 + reduceOnly
         tp_strategy = cfg.get("TP_STRATEGY", [])
+        last_idx = len(tp_strategy) - 1
         for i, tp_entry in enumerate(tp_strategy):
             rr       = tp_entry["RR_RATIO"]
             pct      = tp_entry["PERCENT"]
             tp_price = fill_price + (fill_price - stop_loss) * rr
-            tp_qty   = _floor_to_precision(filled_qty * pct / 100, qty_precision)
-
-            if tp_qty <= 0:
-                continue
+            is_last  = (i == last_idx)
 
             try:
-                await client.futures_create_order(
-                    symbol=symbol,
-                    side="SELL",
-                    type="TAKE_PROFIT_MARKET",
-                    stopPrice=round(tp_price, price_precision),
-                    quantity=tp_qty,
-                    reduceOnly=True,
-                    workingType="MARK_PRICE",
-                )
-                log.info(
-                    f"[自動開單] {symbol} 止盈{i + 1} stopPrice={tp_price:.6f} qty={tp_qty}"
-                )
+                if is_last:
+                    await client.futures_create_order(
+                        symbol=symbol,
+                        side="SELL",
+                        type="TAKE_PROFIT_MARKET",
+                        stopPrice=round(tp_price, price_precision),
+                        closePosition=True,
+                        workingType="MARK_PRICE",
+                    )
+                    log.info(
+                        f"[自動開單] {symbol} 止盈{i + 1} stopPrice={tp_price:.6f} (closePosition)"
+                    )
+                else:
+                    tp_qty = _floor_to_precision(filled_qty * pct / 100, qty_precision)
+                    if tp_qty <= 0:
+                        continue
+                    await client.futures_create_order(
+                        symbol=symbol,
+                        side="SELL",
+                        type="TAKE_PROFIT_MARKET",
+                        stopPrice=round(tp_price, price_precision),
+                        quantity=tp_qty,
+                        reduceOnly=True,
+                        workingType="MARK_PRICE",
+                    )
+                    log.info(
+                        f"[自動開單] {symbol} 止盈{i + 1} stopPrice={tp_price:.6f} qty={tp_qty}"
+                    )
             except Exception as e:
                 log.error(f"[自動開單] {symbol} 止盈{i + 1} 掛出失敗: {e}")
 

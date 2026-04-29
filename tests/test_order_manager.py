@@ -56,8 +56,13 @@ def run(coro):
 
 # ─── 測試案例 ──────────────────────────────────────────────────────────────────
 
+def _get_order_kwargs(client, call_index: int) -> dict:
+    """取得第 N 次 futures_create_order 呼叫的 kwargs。"""
+    return client.futures_create_order.call_args_list[call_index].kwargs
+
+
 def test_normal_success():
-    """正常路徑：市價開倉成功，SL/TP 各掛一張。"""
+    """正常路徑：市價開倉成功，SL 用 closePosition，單筆 TP 用 closePosition。"""
     client = _make_client(
         futures_create_order=AsyncMock(
             return_value={"avgPrice": "100.0", "orderId": 1}
@@ -69,6 +74,44 @@ def test_normal_success():
 
     # 市價開倉 1 + 止損 1 + 止盈 1 = 3
     assert client.futures_create_order.call_count == 3
+
+    sl_kwargs = _get_order_kwargs(client, 1)
+    assert sl_kwargs["type"] == "STOP_MARKET"
+    assert sl_kwargs.get("closePosition") is True
+    assert "quantity" not in sl_kwargs
+
+    tp_kwargs = _get_order_kwargs(client, 2)
+    assert tp_kwargs["type"] == "TAKE_PROFIT_MARKET"
+    assert tp_kwargs.get("closePosition") is True
+    assert "quantity" not in tp_kwargs
+
+
+def test_multi_tp_last_is_close_position():
+    """多筆 TP：非最後一筆用 quantity+reduceOnly，最後一筆用 closePosition。"""
+    cfg_multi = {**_CFG, "TP_STRATEGY": [
+        {"RR_RATIO": 1.0, "PERCENT": 50},
+        {"RR_RATIO": 2.0, "PERCENT": 50},
+    ]}
+    client = _make_client(
+        futures_create_order=AsyncMock(
+            return_value={"avgPrice": "100.0", "orderId": 1}
+        )
+    )
+    with patch("app.trading.order_manager.AsyncClient") as cls:
+        cls.create = AsyncMock(return_value=client)
+        run(_place_orders_for_user(cfg_multi, _SYMBOL, _SIGNAL))
+
+    # 市價1 + 止損1 + 止盈2 = 4
+    assert client.futures_create_order.call_count == 4
+
+    tp1_kwargs = _get_order_kwargs(client, 2)
+    assert tp1_kwargs.get("reduceOnly") is True
+    assert "quantity" in tp1_kwargs
+    assert "closePosition" not in tp1_kwargs
+
+    tp2_kwargs = _get_order_kwargs(client, 3)
+    assert tp2_kwargs.get("closePosition") is True
+    assert "quantity" not in tp2_kwargs
 
 
 def test_1007_query_shows_filled():

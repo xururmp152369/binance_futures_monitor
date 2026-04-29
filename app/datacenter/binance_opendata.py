@@ -290,77 +290,86 @@ async def handle_price_websocket(client, batch_symbols):
     - kline_1h：K 線收盤後更新 EMA，觸發 Type2 均線反彈檢查
     - kline_4h：K 線收盤後更新 EMA，驅動策略狀態機
 
-    發生接收例外時會記錄最後一筆 stream/symbol/interval，方便排查。
+    斷線後（Binance 每 24h 關閉、網路中斷）會自動重連，直到 running=False 為止。
     """
-    bm = BinanceSocketManager(client, user_timeout=60)
-    # 同時訂閱 markPrice + kline_15m + kline_1h/4h
     streams = []
     for sym in batch_symbols:
         s = sym.lower()
-        streams.append(f"{s}@markPrice") # 價格
-        streams.append(f"{s}@kline_15m") # 15分K棒
-        streams.append(f"{s}@kline_1h") # 1小K棒
-        streams.append(f"{s}@kline_4h") # 4小K棒
-    try:
-        async with bm.futures_multiplex_socket(streams) as stream:
-            last_stream_name = None
-            last_symbol      = None
-            last_interval    = None
-            while running:
-                try:
-                    msg = await stream.recv()
-                    if not msg or "data" not in msg:
-                        continue
+        streams.append(f"{s}@markPrice")
+        streams.append(f"{s}@kline_15m")
+        streams.append(f"{s}@kline_1h")
+        streams.append(f"{s}@kline_4h")
 
-                    stream_name      = msg["stream"]
-                    last_stream_name = stream_name
-                    data             = msg["data"]
+    reconnect_delay = 5  # 初始重連等待秒數
 
-                    if stream_name.endswith("@markPrice"):
-                        last_symbol = data["s"].upper()
-                        _handle_mark_price(data)
+    while running:
+        bm = BinanceSocketManager(client, user_timeout=60)
+        try:
+            async with bm.futures_multiplex_socket(streams) as stream:
+                reconnect_delay = 5  # 連線成功後重置退避
+                last_stream_name = None
+                last_symbol      = None
+                last_interval    = None
+                while running:
+                    try:
+                        msg = await stream.recv()
+                        if not msg or "data" not in msg:
+                            continue
 
-                    elif stream_name.endswith("@kline_15m"):
-                        last_symbol, last_interval = data["k"]["s"], "15m"
-                        result = _handle_kline_15m(data)
-                        if result:
-                            sym, candle = result
-                            signal = on_new_15m_candle(sym, candle)
-                            if signal:
-                                asyncio.create_task(send_strategy_alert(sym, signal))
-                                asyncio.create_task(place_orders_for_all_users(sym, signal))
+                        stream_name      = msg["stream"]
+                        last_stream_name = stream_name
+                        data             = msg["data"]
 
-                    elif stream_name.endswith("@kline_4h"):
-                        last_symbol, last_interval = data["k"]["s"], "4h"
-                        _handle_kline_4h(data)
+                        if stream_name.endswith("@markPrice"):
+                            last_symbol = data["s"].upper()
+                            _handle_mark_price(data)
 
-                    elif stream_name.endswith("@kline_1h"):
-                        last_symbol, last_interval = data["k"]["s"], "1h"
-                        result = _handle_kline_1h(data)
-                        if result:
-                            sym, candle = result
-                            signal = on_new_1h_candle(sym, candle)
-                            if signal:
-                                asyncio.create_task(send_strategy_alert(sym, signal))
-                                asyncio.create_task(place_orders_for_all_users(sym, signal))
+                        elif stream_name.endswith("@kline_15m"):
+                            last_symbol, last_interval = data["k"]["s"], "15m"
+                            result = _handle_kline_15m(data)
+                            if result:
+                                sym, candle = result
+                                signal = on_new_15m_candle(sym, candle)
+                                if signal:
+                                    asyncio.create_task(send_strategy_alert(sym, signal))
+                                    asyncio.create_task(place_orders_for_all_users(sym, signal))
 
-                except asyncio.CancelledError:
-                    log.info(f"批次 WebSocket 收到取消信號 | batch_symbols={batch_symbols[:3]}...")
-                    break
-                except Exception as e:
-                    log.error(
-                        f"接收訊息時發生錯誤（繼續運行）: {e} | "
-                        f"last_stream={last_stream_name} last_symbol={last_symbol} last_interval={last_interval}"
-                    )
-                    await asyncio.sleep(0.1)
-            log.info(f"批次 WebSocket 退出接收循環，準備關閉連線 | batch_symbols={batch_symbols[:3]}...")
-    except asyncio.CancelledError:
-        log.info(f"批次 WebSocket 外層被取消 | batch_symbols={batch_symbols[:3]}...")
-        raise
-    except Exception as e:
-        log.exception(f"Price WebSocket 連線失敗: {e} | batch_symbols={batch_symbols}")
-    finally:
-        log.info(f"批次 WebSocket 已完全退出 | batch_symbols={batch_symbols[:3]}...")
+                        elif stream_name.endswith("@kline_4h"):
+                            last_symbol, last_interval = data["k"]["s"], "4h"
+                            _handle_kline_4h(data)
+
+                        elif stream_name.endswith("@kline_1h"):
+                            last_symbol, last_interval = data["k"]["s"], "1h"
+                            result = _handle_kline_1h(data)
+                            if result:
+                                sym, candle = result
+                                signal = on_new_1h_candle(sym, candle)
+                                if signal:
+                                    asyncio.create_task(send_strategy_alert(sym, signal))
+                                    asyncio.create_task(place_orders_for_all_users(sym, signal))
+
+                    except asyncio.CancelledError:
+                        log.info(f"批次 WebSocket 收到取消信號 | batch_symbols={batch_symbols[:3]}...")
+                        return
+                    except Exception as e:
+                        log.error(
+                            f"接收訊息時發生錯誤（繼續運行）: {e} | "
+                            f"last_stream={last_stream_name} last_symbol={last_symbol} last_interval={last_interval}"
+                        )
+                        await asyncio.sleep(0.1)
+
+        except asyncio.CancelledError:
+            log.info(f"批次 WebSocket 外層被取消 | batch_symbols={batch_symbols[:3]}...")
+            raise
+        except Exception as e:
+            log.error(f"Price WebSocket 連線中斷: {e} | batch_symbols={batch_symbols[:3]}...")
+
+        if running:
+            log.info(f"批次 WebSocket 將於 {reconnect_delay} 秒後重連 | batch_symbols={batch_symbols[:3]}...")
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, 60)  # 指數退避，上限 60 秒
+
+    log.info(f"批次 WebSocket 已完全退出 | batch_symbols={batch_symbols[:3]}...")
 
 async def monitor_price_websocket(client):
     """啟動並監控所有 symbols 的 WebSocket 任務。
