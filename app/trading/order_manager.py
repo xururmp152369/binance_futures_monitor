@@ -88,6 +88,15 @@ async def _place_orders_for_user(cfg: dict, symbol: str, signal: dict) -> None:
             log.info(f"[自動開單] {symbol} 已有持倉且不允許加倉，略過")
             return
 
+        # 設定保證金模式（逐倉 ISOLATED / 全倉 CROSSED，預設全倉）
+        margin_type = cfg.get("MARGIN_TYPE", "CROSSED").upper()
+        try:
+            await client.futures_change_margin_type(symbol=symbol, marginType=margin_type)
+            log.info(f"[自動開單] {symbol} 保證金模式設為 {margin_type}")
+        except Exception as e:
+            if "-4046" not in str(e):  # -4046 = 已是目標模式，無需修改
+                log.warning(f"[自動開單] {symbol} 設定保證金模式失敗（忽略）: {e}")
+
         # 設定槓桿
         leverage = cfg["RISK_LEVERAGE"]
         await client.futures_change_leverage(symbol=symbol, leverage=leverage)

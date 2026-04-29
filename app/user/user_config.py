@@ -22,6 +22,7 @@ CONFIG_TEMPLATE_TEXT = """\
 • `ORDER_LIMIT`：同時持有部位數上限
 • `ADD_SAME_SYMBOL`：同幣種已有倉位時，是否再次開單（加倉）
 • `SYMBOL_BLACKLIST`：不自動開單的幣種清單，空陣列表示不限制
+• `MARGIN_TYPE`：保證金模式，`"CROSSED"`（全倉）或 `"ISOLATED"`（逐倉），預設全倉
 • `ENABLED`：是否啟用自動開單
 
 ```
@@ -38,6 +39,7 @@ CONFIG_TEMPLATE_TEXT = """\
     "ORDER_LIMIT": 10,
     "ADD_SAME_SYMBOL": false,
     "SYMBOL_BLACKLIST": [],
+    "MARGIN_TYPE": "CROSSED",
     "ENABLED": true
 }
 ```\
@@ -98,6 +100,10 @@ def validate_config(data: dict) -> tuple[bool, list[str]]:
     blacklist = data.get("SYMBOL_BLACKLIST")
     if not isinstance(blacklist, list) or not all(isinstance(s, str) for s in blacklist):
         errors.append("`SYMBOL_BLACKLIST` 必須為字串陣列，如 [] 或 [\"BTCUSDT\"]")
+
+    margin_type = data.get("MARGIN_TYPE", "CROSSED")
+    if margin_type not in ("CROSSED", "ISOLATED"):
+        errors.append("`MARGIN_TYPE` 必須為 \"CROSSED\"（全倉）或 \"ISOLATED\"（逐倉）")
 
     if not isinstance(data.get("ENABLED"), bool):
         errors.append("`ENABLED` 必須為 true 或 false")
