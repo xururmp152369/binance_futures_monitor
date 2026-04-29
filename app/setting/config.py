@@ -11,8 +11,9 @@ load_dotenv()
 注意：此檔的常數透過 models.runtime_config 供各模組共享，可在執行期透過 /config 指令動態修改。
 """
 # ================== 設定 ==================
-CHAT_ID = os.getenv("CHAT_ID") 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID        = os.getenv("CHAT_ID")
+BOT_TOKEN      = os.getenv("BOT_TOKEN")
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 EXCLUDE_SYMBOLS = {"USDC"}
 
 # ================== 參數 ==================

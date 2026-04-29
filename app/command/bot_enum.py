@@ -11,3 +11,6 @@ class TGBotCommand(StrEnum):
     CONFIG    = "config"
     SETUP     = "setup"
     MY_CONFIG = "myconfig"
+    REGISTER  = "register"
+    LOGIN     = "login"
+    LOGOUT    = "logout"

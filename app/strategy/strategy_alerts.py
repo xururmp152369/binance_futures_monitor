@@ -91,6 +91,10 @@ def format_type2_alert(symbol: str, signal: dict) -> str:
 async def send_strategy_alert(symbol: str, signal: dict) -> bool:
     """發送策略訊號告警到 Telegram。
 
+    發送對象：
+    - CHAT_ID（若設定，作為公開播報頻道）
+    - 所有已綁定 TG 帳號的使用者（個人廣播）
+
     冷卻已由 state_machine 內部管理，此處不做重複判斷。
     例外不向上拋出，避免中斷 WebSocket 連線。
     """
@@ -108,15 +112,34 @@ async def send_strategy_alert(symbol: str, signal: dict) -> bool:
             log.error("[策略] bot 尚未初始化，無法發送告警")
             return False
 
-        await bot.send_message(
-            chat_id=CHAT_ID,
-            text=text,
-            parse_mode="Markdown",
-            disable_web_page_preview=True,
-        )
-        log.info(f"[策略] 告警已發送 {symbol} {sig_type}")
-        return True
+        from ..user.user_config import get_all_registered_chat_ids
+        targets: set[str] = set()
+        if CHAT_ID:
+            targets.add(str(CHAT_ID))
+        for cid in get_all_registered_chat_ids():
+            targets.add(str(cid))
+
+        if not targets:
+            log.warning(f"[策略] 無目標頻道，告警未發送 {symbol} {sig_type}")
+            return False
+
+        success = False
+        for cid in targets:
+            try:
+                await bot.send_message(
+                    chat_id=cid,
+                    text=text,
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True,
+                )
+                success = True
+            except Exception as e:
+                log.error(f"[策略] Telegram 發送失敗 chat_id={cid} {symbol}: {e}")
+
+        if success:
+            log.info(f"[策略] 告警已發送 {symbol} {sig_type} → {len(targets)} 個頻道")
+        return success
 
     except Exception as e:
-        log.error(f"[策略] Telegram 發送失敗 {symbol}: {e}")
+        log.error(f"[策略] 告警處理失敗 {symbol}: {e}")
         return False

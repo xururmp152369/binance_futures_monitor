@@ -1,14 +1,11 @@
 import asyncio
-import json
 import math
 import time
-from pathlib import Path
 from binance import AsyncClient
 from ..extension.utils import setup_logging
+from ..user.user_config import get_all_trading_configs
 
 log = setup_logging()
-
-_DATA_DIR = Path(__file__).parent.parent.parent / "data" / "users"
 
 # True = testnet (https://testnet.binancefuture.com)，測試完畢後改 False 切回正式
 USE_TESTNET = True
@@ -247,20 +244,10 @@ async def _place_orders_for_user(cfg: dict, symbol: str, signal: dict) -> None:
 
 async def place_orders_for_all_users(symbol: str, signal: dict) -> None:
     """遍歷所有使用者設定，對符合條件的使用者在 Binance 期貨自動下單。"""
-    if not _DATA_DIR.exists():
-        return
-
     tasks = []
-    for user_file in _DATA_DIR.glob("*.json"):
-        try:
-            cfg = json.loads(user_file.read_text(encoding="utf-8"))
-        except Exception as e:
-            log.error(f"[自動開單] 讀取設定失敗 {user_file.name}: {e}")
-            continue
-
+    for _, cfg in get_all_trading_configs():
         if not cfg.get("ENABLED"):
             continue
-
         tasks.append(_place_orders_for_user(cfg, symbol, signal))
 
     if not tasks:

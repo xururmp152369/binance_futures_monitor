@@ -6,15 +6,29 @@ from .setting import models
 from .command import bot_enum
 from binance import AsyncClient
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from .setting.config import BOT_TOKEN
+
+from telegram.ext import Application, CommandHandler, MessageHandler, TypeHandler, filters, ContextTypes
+from .setting.config import BOT_TOKEN, ENCRYPTION_KEY
 from .setting.models import running, symbol_state
 from .datacenter.binance_opendata import initialize_symbols, monitor_price_websocket
 from .tgbot.monitor import periodic_screen
 from .extension.utils import setup_logging
 from .command import command
+from .user.user_config import get_account_by_chat_id, is_session_valid, refresh_session
 
 log = setup_logging()
+
+
+async def _session_refresh_handler(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    """攔截所有 update，若使用者已登入則自動延長 session。group=-1 先於其他 handler 執行。"""
+    if not update.effective_user:
+        return
+    result = get_account_by_chat_id(update.effective_user.id)
+    if not result:
+        return
+    account_name, acc = result
+    if is_session_valid(acc):
+        refresh_session(account_name, acc)
 
 async def daily_restart_scheduler(client, restart_hour=4):
     """每日定時重啟任務。
@@ -81,15 +95,28 @@ async def main():
     """
     global running, bot
 
+    # 確認加密金鑰已設定
+    if not ENCRYPTION_KEY:
+        log.error("=" * 60)
+        log.error("ENCRYPTION_KEY 未設定！")
+        log.error("請執行以下指令生成 key，並加入 .env：")
+        log.error('  python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"')
+        log.error("在 .env 中加入：  ENCRYPTION_KEY=<generated key>")
+        log.error("=" * 60)
+        sys.exit(1)
+
     log.info("啟動 Binance 異動監控 Bot...")
 
-    # 確保使用者設定檔目錄存在
-    Path("data/users").mkdir(parents=True, exist_ok=True)
+    # 確保資料目錄存在
+    Path("data/accounts").mkdir(parents=True, exist_ok=True)
+    Path("data/configs").mkdir(parents=True, exist_ok=True)
 
     # 建立 Application
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_error_handler(error_handler)
     models.bot = application.bot
+    # group=-1：任何互動都自動延長 session
+    application.add_handler(TypeHandler(Update, _session_refresh_handler), group=-1)
     # 註冊指令
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.COMMAND,   command.command))
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.SEARCH,    command.search))
@@ -97,6 +124,9 @@ async def main():
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.CONFIG,    command.config))
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.SETUP,     command.setup))
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.MY_CONFIG, command.my_config))
+    application.add_handler(CommandHandler(bot_enum.TGBotCommand.REGISTER,  command.register))
+    application.add_handler(CommandHandler(bot_enum.TGBotCommand.LOGIN,     command.login))
+    application.add_handler(CommandHandler(bot_enum.TGBotCommand.LOGOUT,    command.logout))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, command.handle_json_message))
 
     # Binance client
