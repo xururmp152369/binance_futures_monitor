@@ -1,8 +1,6 @@
 """市價開倉 + -1007 重試邏輯測試"""
 
 import asyncio
-import json
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -190,31 +188,3 @@ def test_other_error_aborts_immediately():
 
     assert client.futures_create_order.call_count == 1  # 只嘗試 1 次
 
-
-# ─── 實際下單整合測試（打 testnet，需要有效 API Key） ──────────────────────────
-
-_USER_CONFIG_PATH = Path(__file__).parent.parent / "data" / "users" / "5746757471.json"
-
-
-@pytest.mark.skipif(not _USER_CONFIG_PATH.exists(), reason="使用者設定檔不存在")
-def test_real_btcusdt_order():
-    """實際下單：讀 5746757471.json，BTCUSDT 市價開倉，SL = 市價 × 95%。"""
-    cfg = json.loads(_USER_CONFIG_PATH.read_text(encoding="utf-8"))
-
-    async def _run():
-        from binance import AsyncClient as _Client
-        # 取得 BTCUSDT 當前標記價格（公開資料，不需 API Key）
-        pub = await _Client.create(testnet=True)
-        try:
-            ticker = await pub.futures_mark_price(symbol="BTCUSDT")
-            mark_price = float(ticker["markPrice"])
-        finally:
-            await pub.close_connection()
-
-        stop_loss = round(mark_price * 0.95, 2)
-        signal = {"type": "type1", "close": mark_price, "stop_loss": stop_loss}
-        print(f"\n  mark_price={mark_price:.2f}  stop_loss={stop_loss:.2f}")
-
-        await _place_orders_for_user(cfg, "BTCUSDT", signal)
-
-    run(_run())

@@ -1,14 +1,16 @@
 """WebSocket 診斷腳本
 
-執行方式（在 venv 中）：
-    python test_ws_diag.py
+此腳本不是自動化測試，需要手動執行（需要網路連線至 Binance）：
+
+    python tests/test_ws_diag.py
 
 測試兩種連線方式，各跑 30 秒：
-  A. 直接 websockets.connect() → 繞過 python-binance
-  B. BinanceSocketManager.futures_multiplex_socket() → 現有程式路徑
+  A. 直接 websockets.connect() → 繞過 python-binance，排除 BinanceSocketManager 問題
+  B. BinanceSocketManager.futures_multiplex_socket() → 與正式程式相同路徑
 
-結果若 A 有資料、B 沒有 → BinanceSocketManager 有問題，改用方案 A
-結果若 A 也沒資料      → 網路 / Binance 端問題
+診斷結論：
+  A 有資料、B 沒有 → BinanceSocketManager 有問題，考慮改用原始 websockets
+  A 也沒資料      → 網路問題或 Binance 端問題（確認能否連到 fstream.binance.com）
 """
 
 import asyncio
@@ -124,7 +126,7 @@ async def main():
         print("  ✓ B 有資料、A 沒有 → 罕見情況，websockets 有問題")
     else:
         print("  ✗ A 和 B 都沒有資料 → 網路問題或 Binance 端問題")
-        print("    請確認：1) 能否 ping fstream.binance.com  2) 是否在中國大陸需要代理")
+        print("    請確認：1) 能否 ping fstream.binance.com  2) 是否需要代理")
     print("=" * 60)
 
 

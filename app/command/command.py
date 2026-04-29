@@ -123,7 +123,6 @@ async def my_config(update: Update, _context: ContextTypes.DEFAULT_TYPE):
         val = cfg.get(key, "")
         return val[:4] + "****" if len(val) > 4 else "****"
 
-    from datetime import datetime
     exp_str = datetime.fromtimestamp(acc["session_expires_at"]).strftime("%Y-%m-%d %H:%M")
 
     tp_lines = "\n".join(
