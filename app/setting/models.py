@@ -1,6 +1,6 @@
 from collections import defaultdict, deque
 from .config import (
-    PUMP_THRESHOLD, CONSOLIDATION_MIN_HOURS, BREAKOUT_VOLUME_MULT,
+    PUMP_THRESHOLD, CONSOLIDATION_MIN_HOURS, BREAKOUT_VOLUME_MULT, LOOKBACK_VOLUME_MULT,
     EMA_TOUCH_THRESHOLD, WICK_THRESHOLD, STRATEGY_RR_MIN, STRATEGY_COOLDOWN,
     QUOTE_VOLUME,
 )
@@ -35,6 +35,7 @@ runtime_config: dict = {
     "PUMP_THRESHOLD":          PUMP_THRESHOLD,           # 4h 拉漲門檻 (%)
     "CONSOLIDATION_MIN_HOURS": CONSOLIDATION_MIN_HOURS,  # 最低盤整時數 (h)
     "BREAKOUT_VOLUME_MULT":    BREAKOUT_VOLUME_MULT,     # Type1 突破量能倍數
+    "LOOKBACK_VOLUME_MULT":    LOOKBACK_VOLUME_MULT,     # Type1 回推放量序列門檻
     "EMA_TOUCH_THRESHOLD":     EMA_TOUCH_THRESHOLD,      # Type2 EMA 觸碰容忍 (%)
     "WICK_THRESHOLD":          WICK_THRESHOLD,           # Type2 有效收針 (%)
     "STRATEGY_RR_MIN":         STRATEGY_RR_MIN,          # Type2 最低盈虧比

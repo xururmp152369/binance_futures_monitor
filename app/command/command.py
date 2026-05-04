@@ -2,9 +2,8 @@ import json
 from datetime import datetime
 from telegram import Update
 from telegram.ext import ContextTypes
-from ..setting.models import symbol_state, price_history, strategy_state, runtime_config
+from ..setting.models import symbol_state, strategy_state
 from ..strategy.state_machine import StrategyPhase
-from ..extension.utils import reply_text_long
 from ..user.user_config import (
     CONFIG_TEMPLATE_TEXT,
     get_user_config,
@@ -248,59 +247,7 @@ async def command(update: Update, _context: ContextTypes.DEFAULT_TYPE):
         "/setup — 取得自動開單設定範本\n"
         "/myconfig — 查看目前個人設定\n\n"
         "📊 行情查詢：\n"
-        "/s <coin> — 搜尋幣種歷史資料，ex: btc\n"
         "/strategy <coin> — 查看策略狀態，ex: btc\n"
-        "/config — 查看或修改執行期參數\n"
-    )
-
-
-async def config(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/config 指令：查看或動態修改執行期參數。"""
-    args = context.args
-
-    if not args:
-        lines = ["⚙️ *執行期參數一覽*\n"]
-        descriptions = {
-            "QUOTE_VOLUME":            "24h 最低成交量篩選 (USDT)",
-            "PUMP_THRESHOLD":          "4h 拉漲偵測門檻 (%)",
-            "CONSOLIDATION_MIN_HOURS": "最低盤整時數 (h)",
-            "BREAKOUT_VOLUME_MULT":    "Type1 突破量能倍數",
-            "EMA_TOUCH_THRESHOLD":     "Type2 EMA 觸碰容忍 (%)",
-            "WICK_THRESHOLD":          "Type2 有效收針 (%)",
-            "STRATEGY_RR_MIN":         "Type2 最低盈虧比",
-            "STRATEGY_COOLDOWN":       "策略告警冷卻 (秒)",
-        }
-        for key, val in runtime_config.items():
-            desc = descriptions.get(key, "")
-            lines.append(f"`{key}` = `{val}` — {desc}")
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
-        return
-
-    if args[0].lower() == "set" and len(args) >= 3:
-        param = args[1].upper()
-        raw_val = args[2]
-
-        if param not in runtime_config:
-            await update.message.reply_text(
-                f"❌ 未知參數：`{param}`\n輸入 /config 查看所有可用參數",
-                parse_mode="Markdown",
-            )
-            return
-
-        try:
-            old_val = runtime_config[param]
-            new_val = int(float(raw_val)) if isinstance(old_val, int) else float(raw_val)
-            runtime_config[param] = new_val
-            await update.message.reply_text(
-                f"✅ 已更新 `{param}`\n`{old_val}` → `{new_val}`",
-                parse_mode="Markdown",
-            )
-        except ValueError:
-            await update.message.reply_text(f"❌ 無效的數值：`{raw_val}`", parse_mode="Markdown")
-        return
-
-    await update.message.reply_text(
-        "用法：\n/config\n/config set PARAM VALUE\n\n例如：/config set PUMP_THRESHOLD 8"
     )
 
 
@@ -357,27 +304,3 @@ async def strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
-async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/s 指令：輸出指定幣種的價格歷史快照。"""
-    args = context.args
-
-    if not args:
-        await update.message.reply_text("用法：\n/s btc eth\n輸入一個或多個幣對名稱")
-        return
-
-    symbols = [arg.upper() if "USDT" in arg.upper() else f"{arg.upper()}USDT" for arg in args]
-
-    for symbol in symbols:
-        price_hist = price_history.get(symbol, [])
-
-        if not price_hist:
-            await update.message.reply_text(f"{symbol}：無歷史資料")
-            continue
-
-        symbol_info = [f"{symbol}，已儲存的歷史訊息參考："]
-
-        for i, (timestamp, price) in enumerate(price_hist, 1):
-            time_str = datetime.fromtimestamp(timestamp).strftime('%H:%M:%S')
-            symbol_info.append(f"紀錄時間: {time_str}，紀錄價格: {price:.6f} (第{i}筆)")
-
-        await reply_text_long(update.message, "\n".join(symbol_info))

@@ -6,6 +6,7 @@ _DEFAULT_RUNTIME_CONFIG = {
     "PUMP_THRESHOLD":          8,
     "CONSOLIDATION_MIN_HOURS": 12,
     "BREAKOUT_VOLUME_MULT":    3,
+    "LOOKBACK_VOLUME_MULT":    2.5,
     "EMA_TOUCH_THRESHOLD":     0.5,
     "WICK_THRESHOLD":          2,
     "STRATEGY_RR_MIN":         1.0,

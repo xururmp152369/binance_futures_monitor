@@ -119,9 +119,7 @@ async def main():
     application.add_handler(TypeHandler(Update, _session_refresh_handler), group=-1)
     # 註冊指令
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.COMMAND,   command.command))
-    application.add_handler(CommandHandler(bot_enum.TGBotCommand.SEARCH,    command.search))
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.STRATEGY,  command.strategy))
-    application.add_handler(CommandHandler(bot_enum.TGBotCommand.CONFIG,    command.config))
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.SETUP,     command.setup))
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.MY_CONFIG, command.my_config))
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.REGISTER,  command.register))

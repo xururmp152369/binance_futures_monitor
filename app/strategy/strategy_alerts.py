@@ -21,7 +21,6 @@ def format_type1_alert(symbol: str, signal: dict) -> str:
     stop       = signal["stop_loss"]
     top        = signal["top"]
     bottom     = signal["bottom"]
-    target     = signal["target"]
     vol_r      = signal["vol_ratio"]
     pump_str   = datetime.fromtimestamp(signal["pump_time"]).strftime("%Y/%m/%d %H:%M")
     pump_high  = signal["pump_high"]
@@ -43,8 +42,7 @@ def format_type1_alert(symbol: str, signal: dict) -> str:
         f"🔼 突破頂部：`{_fmt_price(top)}` (+{top_pct:.2f}%)\n"
         f"📊 量能：`{vol_r:.1f}×` 均值\n"
         f"\n"
-        f"🔴 止損：`{_fmt_price(stop)}`（本 K 低點，-{stop_pct:.2f}%）\n"
-        f"🟢 目標 (1.5R)：`{_fmt_price(target)}`\n"
+        f"🔴 止損：`{_fmt_price(stop)}`（放量起始，-{stop_pct:.2f}%）\n"
         f"\n"
         f"📦 盤整區間：`{_fmt_price(bottom)}` ～ `{_fmt_price(top)}`（幅度 {range_pct:.1f}%）\n"
         f"[📈 查看圖表](https://www.binance.com/zh-TC/futures/{symbol})"
@@ -56,7 +54,6 @@ def format_type2_alert(symbol: str, signal: dict) -> str:
     close       = signal["close"]
     stop        = signal["stop_loss"]
     top         = signal["top"]
-    target      = signal["target"]
     rr          = signal["rr"]
     wick_pct    = signal["wick_pct"]
     ema_period, ema_val = signal["touched_ema"]
@@ -81,7 +78,6 @@ def format_type2_alert(symbol: str, signal: dict) -> str:
         f"📊 盈虧比 (至頂)：`{rr:.2f}:1`\n"
         f"\n"
         f"🔴 止損：`{_fmt_price(stop)}`（拉漲 K 低點，-{stop_pct:.2f}%）\n"
-        f"🟢 目標 (1.5R)：`{_fmt_price(target)}`\n"
         f"📦 盤整頂部參考：`{_fmt_price(top)}` (+{top_pct:.2f}%)\n"
         f"\n"
         f"[📈 查看圖表](https://www.binance.com/zh-TC/futures/{symbol})"

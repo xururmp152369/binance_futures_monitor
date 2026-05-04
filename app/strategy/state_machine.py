@@ -180,24 +180,35 @@ def on_new_15m_candle(symbol: str, candle: tuple) -> dict | None:
     if now - st["last_alert_ts"] < models.runtime_config["STRATEGY_COOLDOWN"]:
         return None
 
-    risk   = close - low
-    target = close + risk * 1.5
+    # 動態止損：往回掃描連續放量序列，上限為當前 4h K 棒起點
+    _4H_MS = 4 * 3600 * 1000
+    current_4h_open_ms = (open_time_ms // _4H_MS) * _4H_MS
+    lookback_threshold = avg_vol * models.runtime_config["LOOKBACK_VOLUME_MULT"]
+
+    stop_loss = low
+    for i in range(len(ohlc_list) - 2, -1, -1):
+        prev = ohlc_list[i]
+        if prev[0] < current_4h_open_ms:
+            break
+        if prev[5] > lookback_threshold:
+            stop_loss = min(stop_loss, prev[3])
+        else:
+            break
 
     st["last_alert_ts"]    = now
     st["last_signal_type"] = "type1"
 
     log.info(
         f"[策略-T1] {symbol} 觸發！close={close:.6f} > top={top:.6f} | "
-        f"量能 {vol_ratio:.1f}× | 止損={low:.6f} | 目標={target:.6f}"
+        f"量能 {vol_ratio:.1f}× | 止損={stop_loss:.6f}"
     )
     return {
         "type":               "type1",
         "symbol":             symbol,
         "close":              close,
-        "stop_loss":          low,
+        "stop_loss":          stop_loss,
         "top":                top,
         "bottom":             st["consolidation_low"],
-        "target":             target,
         "vol_ratio":          vol_ratio,
         "pump_time":          st["pump_candle_time"],
         "pump_high":          st["pump_candle_high"],
@@ -273,7 +284,6 @@ def on_new_1h_candle(symbol: str, candle: tuple) -> dict | None:
     if now - st["last_alert_ts"] < models.runtime_config["STRATEGY_COOLDOWN"]:
         return None
 
-    target   = close + risk * 1.5
     wick_pct = (close - low) / low * 100
     st["last_alert_ts"]    = now
     st["last_signal_type"] = "type2"
@@ -281,7 +291,7 @@ def on_new_1h_candle(symbol: str, candle: tuple) -> dict | None:
     log.info(
         f"[策略-T2] {symbol} 觸發！close={close:.6f} | "
         f"觸碰 EMA{touched_ema[0]}(4h)={touched_ema[1]:.6f} | open={open_:.6f} | "
-        f"收針 {wick_pct:.1f}% | 盈虧比 {rr:.2f} | 止損={stop_loss:.6f} | 目標={target:.6f}"
+        f"收針 {wick_pct:.1f}% | 盈虧比 {rr:.2f} | 止損={stop_loss:.6f}"
     )
     return {
         "type":               "type2",
@@ -291,7 +301,6 @@ def on_new_1h_candle(symbol: str, candle: tuple) -> dict | None:
         "stop_loss":          stop_loss,
         "top":                top,
         "bottom":             stop_loss,
-        "target":             target,
         "rr":                 rr,
         "wick_pct":           wick_pct,
         "touched_ema":        touched_ema,
