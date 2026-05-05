@@ -77,12 +77,16 @@ def get_account_by_chat_id(tg_chat_id: int) -> tuple[str, dict] | None:
 # ─── Session ─────────────────────────────────────────────────────────────────
 
 def is_session_valid(acc: dict) -> bool:
+    if acc.get("permanent"):
+        return True
     exp = acc.get("session_expires_at")
     return bool(exp and time.time() < exp)
 
 
 def refresh_session(account_name: str, acc: dict) -> None:
-    """每次有效互動後延長 session 到期時間。"""
+    """每次有效互動後延長 session 到期時間。永久帳號不更新。"""
+    if acc.get("permanent"):
+        return
     acc["session_expires_at"] = time.time() + SESSION_DURATION
     _save_account(account_name, acc)
 
@@ -94,20 +98,26 @@ def _fmt_ts(ts: float) -> str:
 
 # ─── 帳號操作 ─────────────────────────────────────────────────────────────────
 
-def register_account(account_name: str, password: str) -> tuple[bool, str]:
-    """建立新帳號，回傳 (成功, 訊息)。"""
+_ADMIN_CODE = "lccadmin"
+
+
+def register_account(account_name: str, password: str, admin_code: str = "") -> tuple[bool, str]:
+    """建立新帳號，回傳 (成功, 訊息)。admin_code == _ADMIN_CODE 時帳號永久有效。"""
     if not account_name.isalnum() or len(account_name) < 3:
         return False, "帳號需為 3 字元以上英數字組合"
     if len(password) < 6:
         return False, "密碼需至少 6 字元"
     if _load_account(account_name):
         return False, "帳號已存在，請換一個帳號名稱"
+    permanent = admin_code == _ADMIN_CODE
     _save_account(account_name, {
         "password_hash": _hash_password(password),
         "tg_chat_id": None,
         "session_expires_at": None,
+        "permanent": permanent,
     })
-    return True, "帳號建立成功"
+    msg = "帳號建立成功（永久有效）" if permanent else "帳號建立成功"
+    return True, msg
 
 
 def login_account(account_name: str, password: str, tg_chat_id: int) -> tuple[bool, str]:
@@ -117,8 +127,12 @@ def login_account(account_name: str, password: str, tg_chat_id: int) -> tuple[bo
         return False, "帳號不存在"
     if not _verify_password(password, acc["password_hash"]):
         return False, "密碼錯誤"
-    expires = time.time() + SESSION_DURATION
     acc["tg_chat_id"] = tg_chat_id
+    if acc.get("permanent"):
+        acc["session_expires_at"] = None
+        _save_account(account_name, acc)
+        return True, "登入成功，此帳號 Session 永久有效"
+    expires = time.time() + SESSION_DURATION
     acc["session_expires_at"] = expires
     _save_account(account_name, acc)
     return True, f"登入成功，Session 有效期至 {_fmt_ts(expires)}"
@@ -202,8 +216,10 @@ async def check_expired_sessions(bot) -> None:
             account_name = p.stem
             acc = json.loads(p.read_text(encoding="utf-8"))
             chat_id = acc.get("tg_chat_id")
+            if not chat_id or acc.get("permanent"):
+                continue
             exp = acc.get("session_expires_at")
-            if not chat_id or not exp or time.time() < exp:
+            if not exp or time.time() < exp:
                 continue
             cfg = get_user_config(account_name)
             if not (cfg and cfg.get("ENABLED")):

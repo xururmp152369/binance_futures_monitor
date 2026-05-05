@@ -49,21 +49,24 @@ async def _require_login(update: Update) -> tuple[str, dict] | tuple[None, None]
 # ─── 帳號指令 ─────────────────────────────────────────────────────────────────
 
 async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/register <帳號> <密碼> — 建立新帳號"""
+    """/register <帳號> <密碼> 或 /register lccadmin <帳號> <密碼> — 建立新帳號"""
     args = context.args
-    if len(args) != 2:
+    if len(args) == 3:
+        admin_code, account_name, password = args[0], args[1], args[2]
+    elif len(args) == 2:
+        admin_code, account_name, password = "", args[0], args[1]
+    else:
         await update.message.reply_text(
             "用法：`/register <帳號> <密碼>`\n\n"
             "帳號：3 字元以上英數字\n密碼：6 字元以上",
             parse_mode="Markdown",
         )
         return
-    account_name, password = args[0], args[1]
     try:
         await update.message.delete()
     except Exception:
         pass
-    ok, msg = register_account(account_name, password)
+    ok, msg = register_account(account_name, password, admin_code)
     suffix = f"\n\n請用 `/login {account_name} <密碼>` 登入" if ok else ""
     await update.effective_chat.send_message(
         f"{'✅' if ok else '❌'} {msg}{suffix}",
@@ -122,7 +125,7 @@ async def my_config(update: Update, _context: ContextTypes.DEFAULT_TYPE):
         val = cfg.get(key, "")
         return val[:4] + "****" if len(val) > 4 else "****"
 
-    exp_str = datetime.fromtimestamp(acc["session_expires_at"]).strftime("%Y-%m-%d %H:%M")
+    exp_str = "永久有效" if acc.get("permanent") else datetime.fromtimestamp(acc["session_expires_at"]).strftime("%Y-%m-%d %H:%M")
 
     tp_lines = "\n".join(
         f"  {i}. {e['RR_RATIO']}R → 平倉 {e['PERCENT']}%"
