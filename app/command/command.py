@@ -135,13 +135,17 @@ async def my_config(update: Update, _context: ContextTypes.DEFAULT_TYPE):
     risk_label  = "固定投入金額" if cfg.get("RISK_TYPE") == 0 else "固定損失金額"
     blacklist   = cfg.get("SYMBOL_BLACKLIST") or []
     margin_type = cfg.get("MARGIN_TYPE", "CROSSED")
+    order_mode  = cfg.get("ORDER_MODE", "DEV")
 
     text = (
         f"📄 *你的目前設定*\n\n"
         f"帳號：`{account_name}`\n"
         f"Session 到期：`{exp_str}`\n\n"
-        f"API Key：`{_mask('API_KEY')}`\n"
-        f"Secret Key：`{_mask('SECRET_KEY')}`\n\n"
+        f"API Key（模擬）：`{_mask('API_KEY')}`\n"
+        f"Secret Key（模擬）：`{_mask('SECRET_KEY')}`\n"
+        f"API Key（正式）：`{_mask('PRD_API_KEY')}`\n"
+        f"Secret Key（正式）：`{_mask('PRD_SECRET_KEY')}`\n\n"
+        f"下單模式：`{'正式 (PRD)' if order_mode == 'PRD' else '模擬 (DEV)'}`\n"
         f"策略：`{'、'.join(cfg.get('STRATEGY', []))}`\n"
         f"風險模式：{risk_label}\n"
         f"投入/損失金額：`{cfg.get('RISK_AMOUNT')} USDT`\n"
@@ -157,9 +161,9 @@ async def my_config(update: Update, _context: ContextTypes.DEFAULT_TYPE):
 
 
 _ALL_CONFIG_KEYS = {
-    "API_KEY", "SECRET_KEY", "STRATEGY", "RISK_TYPE", "RISK_AMOUNT",
-    "RISK_LEVERAGE", "MARGIN_TYPE", "TP_STRATEGY", "ORDER_LIMIT",
-    "ADD_SAME_SYMBOL", "SYMBOL_BLACKLIST", "ENABLED",
+    "API_KEY", "SECRET_KEY", "PRD_API_KEY", "PRD_SECRET_KEY", "ORDER_MODE",
+    "STRATEGY", "RISK_TYPE", "RISK_AMOUNT", "RISK_LEVERAGE", "MARGIN_TYPE",
+    "TP_STRATEGY", "ORDER_LIMIT", "ADD_SAME_SYMBOL", "SYMBOL_BLACKLIST", "ENABLED",
 }
 
 

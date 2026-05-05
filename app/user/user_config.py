@@ -254,7 +254,9 @@ CONFIG_TEMPLATE_TEXT = """\
 請複製下方 JSON，填寫後直接傳給我：
 
 *欄位說明：*
-• `API_KEY` / `SECRET_KEY`：Binance API 金鑰
+• `API_KEY` / `SECRET_KEY`：模擬帳戶（Testnet）API 金鑰
+• `PRD_API_KEY` / `PRD_SECRET_KEY`：正式帳戶 API 金鑰（ORDER\\_MODE=PRD 時必填）
+• `ORDER_MODE`：下單環境，`"DEV"`（模擬，預設）或 `"PRD"`（正式）
 • `STRATEGY`：觸發自動開單的策略，可填 "TYPE1"（帶量突破）、"TYPE2"（均線反彈），或兩者皆填
 • `RISK_TYPE`：風險計算方式
   ‣ `0`：固定投入金額（RISK\\_AMOUNT × 槓桿 USDT）
@@ -274,6 +276,9 @@ CONFIG_TEMPLATE_TEXT = """\
 {
     "API_KEY": "",
     "SECRET_KEY": "",
+    "PRD_API_KEY": "",
+    "PRD_SECRET_KEY": "",
+    "ORDER_MODE": "DEV",
     "STRATEGY": ["TYPE1", "TYPE2"],
     "RISK_TYPE": 0,
     "RISK_AMOUNT": 0.1,
@@ -298,6 +303,14 @@ def validate_config(data: dict) -> tuple[bool, list[str]]:
     for key in ("API_KEY", "SECRET_KEY"):
         if not isinstance(data.get(key), str) or not data[key].strip():
             errors.append(f"`{key}` 必須為非空字串")
+
+    order_mode = data.get("ORDER_MODE", "DEV")
+    if order_mode not in ("PRD", "DEV"):
+        errors.append("`ORDER_MODE` 必須為 \"PRD\"（正式）或 \"DEV\"（模擬）")
+    elif order_mode == "PRD":
+        for key in ("PRD_API_KEY", "PRD_SECRET_KEY"):
+            if not isinstance(data.get(key), str) or not data[key].strip():
+                errors.append(f"`{key}` 使用正式模式（ORDER_MODE=PRD）時必須填寫")
 
     strategy = data.get("STRATEGY")
     if not isinstance(strategy, list) or not strategy:

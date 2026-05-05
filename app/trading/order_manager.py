@@ -7,8 +7,6 @@ from ..user.user_config import get_all_trading_configs
 
 log = setup_logging()
 
-# True = testnet (https://testnet.binancefuture.com)，測試完畢後改 False 切回正式
-USE_TESTNET = True
 
 
 def _floor_to_precision(value: float, precision: int) -> float:
@@ -63,13 +61,18 @@ async def _place_orders_for_user(cfg: dict, symbol: str, signal: dict) -> None:
         log.info(f"[自動開單] {symbol} 在黑名單，略過")
         return
 
+    use_prd = cfg.get("ORDER_MODE", "DEV") == "PRD"
+    api_key    = cfg["PRD_API_KEY"]    if use_prd else cfg["API_KEY"]
+    api_secret = cfg["PRD_SECRET_KEY"] if use_prd else cfg["SECRET_KEY"]
+
     client = None
     try:
         client = await AsyncClient.create(
-            api_key=cfg["API_KEY"],
-            api_secret=cfg["SECRET_KEY"],
-            testnet=USE_TESTNET,
+            api_key=api_key,
+            api_secret=api_secret,
+            testnet=not use_prd,
         )
+        log.info(f"[自動開單] {symbol} 模式={'正式' if use_prd else '模擬'}")
 
         # 部位上限 & 加倉檢查
         open_positions = await _get_open_positions(client)
