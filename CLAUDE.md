@@ -82,6 +82,7 @@ data/
 
 ### 狀態轉換
 
+**多頭（strategy_state）**
 ```
 IDLE
  │ 觸發：4h K 棒為陽線，且 (high-low)/low >= PUMP_THRESHOLD%
@@ -93,39 +94,69 @@ TRACKING（不限時長，持續追蹤盤整）
  ▼
 READY（監控進場訊號）
  │ 廢棄：同上（含創新高時退回 TRACKING）
- ├─ 每根 15m 收盤 → Type 1 帶量突破
- └─ 每根 1h  收盤 → Type 2 均線反彈
+ ├─ 每根 15m 收盤 → Type 1 帶量突破（做多）
+ └─ 每根 1h  收盤 → Type 2 均線反彈（做多）
+```
+
+**空頭（strategy_state_short）**
+```
+IDLE
+ │ 觸發：4h K 棒為陰線，且 (high-low)/low >= PUMP_THRESHOLD%
+ ▼
+TRACKING（不限時長，持續追蹤盤整）
+ │ 廢棄：4h K 棒 high > pump_candle_high → 回 IDLE（即時掃描亦會觸發）
+ │ 延伸：後續 4h K 棒創新低 → 更新 consolidation_low，重置盤整計時
+ │ 進展：停止創新低後，已盤整 >= CONSOLIDATION_MIN_HOURS(16h)
+ ▼
+READY（監控進場訊號）
+ │ 廢棄：同上（含創新低時退回 TRACKING）
+ └─ 每根 15m 收盤 → Type 1 Short 帶量跌破（做空）
 ```
 
 ### 進場訊號條件
 
-**Type 1（帶量突破）**
+**Type 1（帶量突破，做多）**
 - 15m 收盤 > `consolidation_high`
 - 15m 成交量 > 前 192 根平均 × `BREAKOUT_VOLUME_MULT`(3)
-- 止損 = 該 15m K 棒最低價
+- 止損 = 往回掃連續放量 K 的最低 low（限當前 4h K 棒起點後）
 
-**Type 2（均線反彈）**
+**Type 1 Short（帶量跌破，做空）**
+- 15m 收盤 < `consolidation_low`
+- 15m 成交量 > 前 192 根平均 × `BREAKOUT_VOLUME_MULT`(3)
+- 止損 = 往回掃連續放量 K 的最高 high（限當前 4h K 棒起點後）
+
+**Type 2（均線反彈，做多）**
 - 1h K 最低 ≤ 任一 4h EMA（15/30/45/60） × (1 + `EMA_TOUCH_THRESHOLD`/100)
 - 多頭確認：1h K 開盤 > 觸碰的 EMA 值
 - 有效收針：close > low × (1 + `WICK_THRESHOLD`/100)
 - 盈虧比：(consolidation_high - close) / (close - consolidation_low) ≥ `STRATEGY_RR_MIN`
 - 止損 = `consolidation_low`（= pump_candle_low）
 
-### strategy_state[symbol] 結構
+### strategy_state / strategy_state_short 結構（共用）
+
+兩個狀態 dict 使用相同結構，欄位語意對調：
+
+| 欄位 | 多頭語意 | 空頭語意 |
+|------|----------|----------|
+| `pump_candle_low` | 固定失效線（跌破→IDLE） | dump candle 低點（參考） |
+| `pump_candle_high` | pump candle 高點（參考） | 固定失效線（突破→IDLE） |
+| `consolidation_low` | 固定底部（= pump_candle_low） | 動態更新（新低則更新，重置計時） |
+| `consolidation_high` | 動態更新（新高則更新，重置計時） | 固定頂部（= pump_candle_high） |
+| `consolidation_start_ts` | 最後一次創新高的 open_time | 最後一次創新低的 open_time |
 
 ```python
 {
     "phase":                  StrategyPhase.IDLE,
     "pump_candle_open":       None,
     "pump_candle_close":      None,
-    "pump_candle_low":        None,   # 盤整底部 / 廢棄門檻（固定不變）
+    "pump_candle_low":        None,
     "pump_candle_high":       None,
     "pump_candle_time":       None,   # Unix 秒（open_time）
-    "consolidation_low":      None,   # = pump_candle_low
-    "consolidation_high":     None,   # 後續 4h K 最高值（延伸時持續更新）
-    "consolidation_start_ts": None,   # 最後一次創新高的 open_time（秒）
+    "consolidation_low":      None,
+    "consolidation_high":     None,
+    "consolidation_start_ts": None,
     "last_alert_ts":          0.0,
-    "last_signal_type":       None,   # "type1" / "type2"
+    "last_signal_type":       None,   # "type1" / "type2" / "type1_short"
 }
 ```
 
@@ -150,6 +181,13 @@ READY（監控進場訊號）
 | `STRATEGY_COOLDOWN` | 14400 | 告警冷卻秒數（4h） |
 | `BATCH_SIZE` | 20 | WebSocket 每批幣種數量 |
 | `QUOTE_VOLUME` | 0 | 24h 最低成交量篩選（0 = 不篩選） |
+
+### 使用者設定新增欄位（user_config）
+
+| 欄位 | 說明 |
+|------|------|
+| `TP_STRATEGY_SHORT` | 空頭止盈策略（選填；不填則 fallback 到 `TP_STRATEGY`）。下跌行情達到目標較難，建議設定比多頭更小的盈虧比 |
+| `STRATEGY` 新增值 | `"TYPE1_SHORT"`：啟用帶量跌破空頭策略 |
 
 > 執行中可透過 `/config set PARAM VALUE` 動態調整（寫入 `runtime_config`，重啟後還原）。
 
@@ -250,8 +288,8 @@ python tests/test_ws_diag.py
 1. **WebSocket 不得阻塞**：策略函數內所有 I/O（Telegram 發送、下單）必須用 `asyncio.create_task()` 非同步執行，避免冒泡中斷連線。
 2. **15m 量能 baseline**：計算時用 `kline_15m_ohlc[-193:-1]`（共 192 根），排除當前未收盤的這根。
 3. **歷史回播**：啟動時 `replay_historical_4h_candles()` 會重播歷史，恢復進行中的盤整狀態，不需等待下一根 4h K。
-4. **廢棄條件是即時的**：`scan_strategy()` 每 10 秒被 `periodic_screen()` 呼叫，即時比對 markPrice vs pump_candle_low。
-5. **盤整頂部會更新**：TRACKING 階段每根 4h K 收盤創新高都會更新 `consolidation_high` 並重置計時，不是固定值。
+4. **廢棄條件是即時的**：`scan_strategy()` 每 10 秒被 `periodic_screen()` 呼叫，即時比對 markPrice vs pump_candle_low（多頭）或 pump_candle_high（空頭）。
+5. **盤整頂/底會更新**：多頭 TRACKING 階段創新高更新 `consolidation_high`；空頭 TRACKING 階段創新低更新 `consolidation_low`，皆會重置計時。
 6. **WebSocket 自動重連**：`handle_price_websocket()` 有外層 while 迴圈，斷線後指數退避（5→10→20→40→60 秒）自動重連。
 7. **自動下單測試模式**：`order_manager.py` 頂部有 `USE_TESTNET = True`，測試完畢後需改為 `False` 才會打正式環境。
 
@@ -289,6 +327,7 @@ python tests/test_ws_diag.py
 5. 導入 AI 模型，透過每次策略告警訓練更合理的止盈止損位置
 6. ~~多使用者機制（帳號密碼登入，防 TG 帳號遺失）~~ ✅
 7. 有條件的使用機制（推薦碼 / 月費訂閱 / 帶單抽成）
+8. Type 1 Short 帶量跌破空頭策略（feature/type1-short branch）
 
 ---
 

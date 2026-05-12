@@ -24,7 +24,8 @@ price_history = defaultdict(lambda: deque(maxlen=100))
 bot = None
 
 # ================== 策略狀態 ==================
-strategy_state = {}   # symbol → 策略狀態 dict（由 state_machine 管理）
+strategy_state       = {}  # symbol → 多頭策略狀態 dict（由 state_machine 管理）
+strategy_state_short = {}  # symbol → 空頭策略狀態 dict（由 state_machine 管理）
 
 # ================== 執行期可調整參數 ==================
 # 從 config.py 初始化；可透過 /config set PARAM VALUE 動態修改，重啟後還原預設值

@@ -49,6 +49,40 @@ def format_type1_alert(symbol: str, signal: dict) -> str:
     )
 
 
+def format_type1_short_alert(symbol: str, signal: dict) -> str:
+    sym_display = symbol.replace("USDT", "USDT.P")
+    close      = signal["close"]
+    stop       = signal["stop_loss"]
+    bottom     = signal["bottom"]
+    top        = signal["top"]
+    vol_r      = signal["vol_ratio"]
+    dump_str   = datetime.fromtimestamp(signal["dump_time"]).strftime("%Y/%m/%d %H:%M")
+    dump_high  = signal["dump_high"]
+    dump_low   = signal["dump_low"]
+    candle_str = datetime.fromtimestamp(signal["candle_open_time_ms"] / 1000).strftime("%Y/%m/%d %H:%M")
+
+    stop_pct   = (stop - close)   / close * 100
+    bottom_pct = (close - bottom) / close * 100
+    range_pct  = (top - bottom)   / bottom * 100
+
+    return (
+        f"🎯 *策略訊號 — Type 1 Short 帶量跌破*\n"
+        f"幣種：`{sym_display}` ｜ {_now_str()}\n"
+        f"\n"
+        f"📅 暴跌 K 棒：`{dump_str}` ｜ 最高 `{_fmt_price(dump_high)}` ｜ 最低 `{_fmt_price(dump_low)}`\n"
+        f"⏰ 跌破 K 棒：`{candle_str}`（15m）\n"
+        f"\n"
+        f"💰 收盤：`{_fmt_price(close)}`\n"
+        f"🔽 跌破底部：`{_fmt_price(bottom)}` (-{bottom_pct:.2f}%)\n"
+        f"📊 量能：`{vol_r:.1f}×` 均值\n"
+        f"\n"
+        f"🔴 止損：`{_fmt_price(stop)}`（放量起始，+{stop_pct:.2f}%）\n"
+        f"\n"
+        f"📦 盤整區間：`{_fmt_price(bottom)}` ～ `{_fmt_price(top)}`（幅度 {range_pct:.1f}%）\n"
+        f"[📈 查看圖表](https://www.binance.com/zh-TC/futures/{symbol})"
+    )
+
+
 def format_type2_alert(symbol: str, signal: dict) -> str:
     sym_display = symbol.replace("USDT", "USDT.P")
     close       = signal["close"]
@@ -98,6 +132,8 @@ async def send_strategy_alert(symbol: str, signal: dict) -> bool:
         sig_type = signal.get("type")
         if sig_type == "type1":
             text = format_type1_alert(symbol, signal)
+        elif sig_type == "type1_short":
+            text = format_type1_short_alert(symbol, signal)
         elif sig_type == "type2":
             text = format_type2_alert(symbol, signal)
         else:

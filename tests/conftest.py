@@ -18,10 +18,12 @@ _DEFAULT_RUNTIME_CONFIG = {
 def reset_global_state():
     """每個測試前後清空全域狀態，並還原 runtime_config 為預設值。"""
     models.strategy_state.clear()
+    models.strategy_state_short.clear()
     models.symbol_state.clear()
     models.runtime_config.update(_DEFAULT_RUNTIME_CONFIG)
     yield
     models.strategy_state.clear()
+    models.strategy_state_short.clear()
     models.symbol_state.clear()
 
 
@@ -33,6 +35,11 @@ def make_4h_candle(ts, open_, high, low, close):
 
 def make_pump_candle(ts, low=100.0, high=110.0, open_=100.0, close=108.0):
     """預設：(high-low)/low = 10% >= 8%，陽線。"""
+    return (ts, open_, high, low, close)
+
+
+def make_dump_candle(ts, low=90.0, high=100.0, open_=99.0, close=91.0):
+    """預設：(high-low)/low ≈ 11.1% >= 8%，陰線。"""
     return (ts, open_, high, low, close)
 
 

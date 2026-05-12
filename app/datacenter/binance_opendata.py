@@ -7,7 +7,12 @@ from ..setting.config import EXCLUDE_SYMBOLS, BATCH_SIZE
 from ..setting.models import symbol_state, running, price_history, strategy_state, runtime_config
 from ..extension.utils import setup_logging
 from collections import deque
-from ..strategy.state_machine import on_new_4h_candle, on_new_1h_candle, on_new_15m_candle, replay_historical_4h_candles
+from ..strategy.state_machine import (
+    on_new_4h_candle, on_new_4h_candle_short,
+    on_new_1h_candle,
+    on_new_15m_candle, on_new_15m_candle_short,
+    replay_historical_4h_candles,
+)
 from ..strategy.strategy_alerts import send_strategy_alert, send_order_results
 from ..trading.order_manager import place_orders_for_all_users
 
@@ -271,6 +276,7 @@ def _handle_kline_4h(data: dict) -> None:
     candle = (int(k["t"]), float(k["o"]), float(k["h"]), float(k["l"]), close_price)
     state["kline_4h_ohlc"].append(candle)
     on_new_4h_candle(sym, candle)
+    on_new_4h_candle_short(sym, candle)
 
 
 def _handle_kline_1h(data: dict) -> tuple | None:
@@ -340,6 +346,9 @@ async def handle_price_websocket(client, batch_symbols):
                                 signal = on_new_15m_candle(sym, candle)
                                 if signal:
                                     asyncio.create_task(_fire_signal(sym, signal))
+                                signal_short = on_new_15m_candle_short(sym, candle)
+                                if signal_short:
+                                    asyncio.create_task(_fire_signal(sym, signal_short))
 
                         elif stream_name.endswith("@kline_4h"):
                             last_symbol, last_interval = data["k"]["s"], "4h"

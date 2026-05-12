@@ -24,8 +24,8 @@ def _calc_quantity(cfg: dict, entry_price: float, stop_loss: float) -> float:
         # 固定投入：(RISK_AMOUNT × 槓桿) / 入場價
         return (risk_amount * leverage) / entry_price
     else:
-        # 固定損失：RISK_AMOUNT / 止損點差
-        sl_dist = entry_price - stop_loss
+        # 固定損失：RISK_AMOUNT / 止損點差（abs 支援多空兩方向）
+        sl_dist = abs(entry_price - stop_loss)
         if sl_dist <= 0:
             return 0.0
         return risk_amount / sl_dist
@@ -119,6 +119,12 @@ async def _place_orders_for_user(
             except Exception as e:
                 log.warning(f"[自動開單] {symbol} 清除舊條件單失敗（忽略）: {e}")
 
+        # 方向設定（多頭 BUY / 空頭 SELL）
+        is_short      = signal["type"] == "type1_short"
+        entry_side    = "SELL" if is_short else "BUY"
+        exit_side     = "BUY"  if is_short else "SELL"
+        direction_str = "空頭" if is_short else "多頭"
+
         # 計算下單量
         entry_price                   = signal["close"]
         stop_loss                     = signal["stop_loss"]
@@ -131,16 +137,16 @@ async def _place_orders_for_user(
             log.error(f"[自動開單] {symbol} {msg} ({account_name})")
             return (False, msg)
 
-        # 市價開多（確認倉位成立後才設置 SL/TP，最多重試 5 次）
+        # 市價開倉（確認倉位成立後才設置 SL/TP，最多重試 5 次）
         MAX_RETRIES = 5
         fill_price = None
-        filled_qty = qty  # 預設用計算量，成交後以 executedQty 覆蓋
+        filled_qty = qty
         for attempt in range(1, MAX_RETRIES + 1):
             order_id = f"cc_{symbol}_{int(time.time() * 1000)}"
             try:
                 order = await client.futures_create_order(
                     symbol=symbol,
-                    side="BUY",
+                    side=entry_side,
                     type="MARKET",
                     quantity=qty,
                     newClientOrderId=order_id,
@@ -151,7 +157,7 @@ async def _place_orders_for_user(
                     _exec if _exec > 0 else qty, qty_precision
                 )
                 log.info(
-                    f"[自動開單] {symbol} 市價開倉成功 attempt={attempt}"
+                    f"[自動開單] {symbol} 市價{direction_str}開倉成功 attempt={attempt}"
                     f" filled_qty={filled_qty} fill={fill_price:.6f} ({account_name})"
                 )
                 break
@@ -159,7 +165,6 @@ async def _place_orders_for_user(
                 if "-1007" not in str(order_err):
                     log.error(f"[自動開單] {symbol} 開倉失敗: {order_err} ({account_name})")
                     return (False, str(order_err))
-                # -1007：逾時，用 newClientOrderId 查詢訂單確認真實狀態
                 log.warning(
                     f"[自動開單] {symbol} 開倉逾時 (-1007) attempt={attempt}/{MAX_RETRIES}，查詢訂單..."
                 )
@@ -190,16 +195,16 @@ async def _place_orders_for_user(
             log.error(f"[自動開單] {symbol} {msg} ({account_name})")
             return (False, msg)
 
-        # 等待倉位入帳後再掛條件單，避免 reduceOnly 因倉位尚未反映而被拒
         await asyncio.sleep(1)
 
         warnings: list[str] = []
+        sl_dist = abs(fill_price - stop_loss)
 
-        # 止損單：closePosition=True，觸價時平全倉，不依賴數量精度
+        # 止損單
         try:
             await client.futures_create_order(
                 symbol=symbol,
-                side="SELL",
+                side=exit_side,
                 type="STOP_MARKET",
                 stopPrice=round(stop_loss, price_precision),
                 closePosition=True,
@@ -210,46 +215,46 @@ async def _place_orders_for_user(
             log.error(f"[自動開單] {symbol} 止損掛出失敗: {e} ({account_name})")
             warnings.append(f"⚠️ 止損設置失敗，請手動設置\n{e}")
 
-        # 止盈單（分批）
-        # 最後一筆用 closePosition=True 確保完全平倉；其餘用數量單 + reduceOnly
-        tp_strategy = cfg.get("TP_STRATEGY", [])
-        last_idx = len(tp_strategy) - 1
+        # 止盈單（分批）：空頭優先用 TP_STRATEGY_SHORT，fallback 到 TP_STRATEGY
+        tp_strategy = (
+            cfg.get("TP_STRATEGY_SHORT") or cfg.get("TP_STRATEGY", [])
+            if is_short
+            else cfg.get("TP_STRATEGY", [])
+        )
+        last_idx  = len(tp_strategy) - 1
         tp_failed = False
         for i, tp_entry in enumerate(tp_strategy):
-            rr       = tp_entry["RR_RATIO"]
-            pct      = tp_entry["PERCENT"]
-            tp_price = fill_price + (fill_price - stop_loss) * rr
+            rr      = tp_entry["RR_RATIO"]
+            pct     = tp_entry["PERCENT"]
+            # 多頭 TP 在上方；空頭 TP 在下方
+            tp_price = fill_price + sl_dist * rr if not is_short else fill_price - sl_dist * rr
             is_last  = (i == last_idx)
 
             try:
                 if is_last:
                     await client.futures_create_order(
                         symbol=symbol,
-                        side="SELL",
+                        side=exit_side,
                         type="TAKE_PROFIT_MARKET",
                         stopPrice=round(tp_price, price_precision),
                         closePosition=True,
                         workingType="MARK_PRICE",
                     )
-                    log.info(
-                        f"[自動開單] {symbol} 止盈{i + 1} stopPrice={tp_price:.6f} (closePosition)"
-                    )
+                    log.info(f"[自動開單] {symbol} 止盈{i + 1} stopPrice={tp_price:.6f} (closePosition)")
                 else:
                     tp_qty = _floor_to_precision(filled_qty * pct / 100, qty_precision)
                     if tp_qty <= 0:
                         continue
                     await client.futures_create_order(
                         symbol=symbol,
-                        side="SELL",
+                        side=exit_side,
                         type="TAKE_PROFIT_MARKET",
                         stopPrice=round(tp_price, price_precision),
                         quantity=tp_qty,
                         reduceOnly=True,
                         workingType="MARK_PRICE",
                     )
-                    log.info(
-                        f"[自動開單] {symbol} 止盈{i + 1} stopPrice={tp_price:.6f} qty={tp_qty}"
-                    )
+                    log.info(f"[自動開單] {symbol} 止盈{i + 1} stopPrice={tp_price:.6f} qty={tp_qty}")
             except Exception as e:
                 log.error(f"[自動開單] {symbol} 止盈{i + 1} 掛出失敗: {e} ({account_name})")
                 tp_failed = True
