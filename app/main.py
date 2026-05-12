@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import urllib.request
 from pathlib import Path
 from datetime import datetime, timedelta, time as dt_time
 from .setting import models
@@ -106,6 +107,12 @@ async def main():
         sys.exit(1)
 
     log.info("啟動 Binance 異動監控 Bot...")
+
+    try:
+        public_ip = urllib.request.urlopen("https://api.ipify.org", timeout=5).read().decode()
+        log.info(f"容器出口 IP：{public_ip}（請確認此 IP 已加入 Binance API 白名單）")
+    except Exception as e:
+        log.warning(f"無法取得出口 IP：{e}")
 
     # 確保資料目錄存在
     Path("data/accounts").mkdir(parents=True, exist_ok=True)

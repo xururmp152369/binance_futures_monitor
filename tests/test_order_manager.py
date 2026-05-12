@@ -68,7 +68,7 @@ def test_normal_success():
     )
     with patch("app.trading.order_manager.AsyncClient") as cls:
         cls.create = AsyncMock(return_value=client)
-        run(_place_orders_for_user(_CFG, _SYMBOL, _SIGNAL))
+        run(_place_orders_for_user("test_account", _CFG, _SYMBOL, _SIGNAL))
 
     # 市價開倉 1 + 止損 1 + 止盈 1 = 3
     assert client.futures_create_order.call_count == 3
@@ -97,7 +97,7 @@ def test_multi_tp_last_is_close_position():
     )
     with patch("app.trading.order_manager.AsyncClient") as cls:
         cls.create = AsyncMock(return_value=client)
-        run(_place_orders_for_user(cfg_multi, _SYMBOL, _SIGNAL))
+        run(_place_orders_for_user("test_account", cfg_multi, _SYMBOL, _SIGNAL))
 
     # 市價1 + 止損1 + 止盈2 = 4
     assert client.futures_create_order.call_count == 4
@@ -128,7 +128,7 @@ def test_1007_query_shows_filled():
     )
     with patch("app.trading.order_manager.AsyncClient") as cls:
         cls.create = AsyncMock(return_value=client)
-        run(_place_orders_for_user(_CFG, _SYMBOL, _SIGNAL))
+        run(_place_orders_for_user("test_account", _CFG, _SYMBOL, _SIGNAL))
 
     assert client.futures_create_order.call_count == 3  # 開倉1 + 止損1 + 止盈1
     assert client.futures_get_order.call_count == 1
@@ -151,7 +151,7 @@ def test_1007_retry_succeeds_on_second_attempt():
     )
     with patch("app.trading.order_manager.AsyncClient") as cls:
         cls.create = AsyncMock(return_value=client)
-        run(_place_orders_for_user(_CFG, _SYMBOL, _SIGNAL))
+        run(_place_orders_for_user("test_account", _CFG, _SYMBOL, _SIGNAL))
 
     assert client.futures_create_order.call_count == 4  # 開倉2 + 止損1 + 止盈1
     assert client.futures_get_order.call_count == 1
@@ -169,7 +169,7 @@ def test_1007_all_5_retries_exhausted():
     )
     with patch("app.trading.order_manager.AsyncClient") as cls:
         cls.create = AsyncMock(return_value=client)
-        run(_place_orders_for_user(_CFG, _SYMBOL, _SIGNAL))
+        run(_place_orders_for_user("test_account", _CFG, _SYMBOL, _SIGNAL))
 
     assert client.futures_create_order.call_count == 5
     assert client.futures_get_order.call_count == 5
@@ -184,7 +184,7 @@ def test_other_error_aborts_immediately():
     )
     with patch("app.trading.order_manager.AsyncClient") as cls:
         cls.create = AsyncMock(return_value=client)
-        run(_place_orders_for_user(_CFG, _SYMBOL, _SIGNAL))
+        run(_place_orders_for_user("test_account", _CFG, _SYMBOL, _SIGNAL))
 
     assert client.futures_create_order.call_count == 1  # 只嘗試 1 次
 

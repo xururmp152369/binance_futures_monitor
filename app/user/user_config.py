@@ -189,6 +189,23 @@ def get_all_trading_configs() -> list[tuple[str, dict]]:
     return result
 
 
+def get_all_trading_configs_with_chat_id() -> list[tuple[str, int | None, dict]]:
+    """回傳所有帳號的 (account_name, tg_chat_id, config)，供開單結果通知使用。"""
+    result = []
+    if not _CONFIGS_DIR.exists():
+        return result
+    for p in _CONFIGS_DIR.glob("*.json"):
+        try:
+            cfg = get_user_config(p.stem)
+            if cfg is not None:
+                acc = _load_account(p.stem)
+                chat_id = acc.get("tg_chat_id") if acc else None
+                result.append((p.stem, chat_id, cfg))
+        except Exception:
+            continue
+    return result
+
+
 def get_all_registered_chat_ids() -> list[int]:
     """回傳所有已綁定 TG 帳號的 chat_id，供策略告警廣播使用。"""
     result = []

@@ -3,7 +3,7 @@ import math
 import time
 from binance import AsyncClient
 from ..extension.utils import setup_logging
-from ..user.user_config import get_all_trading_configs
+from ..user.user_config import get_all_trading_configs_with_chat_id
 
 log = setup_logging()
 
@@ -49,17 +49,26 @@ async def _get_open_positions(client: AsyncClient) -> list[dict]:
     return [p for p in positions if float(p.get("positionAmt", 0)) != 0]
 
 
-async def _place_orders_for_user(cfg: dict, symbol: str, signal: dict) -> None:
-    # 策略類型比對（signal type: "type1"/"type2"，config STRATEGY: ["TYPE1","TYPE2"]）
+async def _place_orders_for_user(
+    account_name: str, cfg: dict, symbol: str, signal: dict
+) -> tuple[bool, str] | None:
+    """對單一使用者執行自動下單。
+
+    回傳：
+      None          → 略過（策略不符 / 黑名單），不發通知
+      (True,  msg)  → 開倉成功
+      (False, msg)  → 開倉失敗，msg 含錯誤說明
+    """
+    # 策略類型比對 → None = 略過（不通知）
     signal_type = signal["type"].upper()
     if signal_type not in [s.upper() for s in cfg.get("STRATEGY", [])]:
-        return
+        return None
 
-    # 黑名單檢查
+    # 黑名單檢查 → None = 略過（不通知）
     blacklist = [s.upper() for s in cfg.get("SYMBOL_BLACKLIST", [])]
     if symbol.upper() in blacklist:
-        log.info(f"[自動開單] {symbol} 在黑名單，略過")
-        return
+        log.info(f"[自動開單] {symbol} 在黑名單，略過 ({account_name})")
+        return None
 
     use_prd = cfg.get("ORDER_MODE", "DEV") == "PRD"
     api_key    = cfg["PRD_API_KEY"]    if use_prd else cfg["API_KEY"]
@@ -72,21 +81,21 @@ async def _place_orders_for_user(cfg: dict, symbol: str, signal: dict) -> None:
             api_secret=api_secret,
             testnet=not use_prd,
         )
-        log.info(f"[自動開單] {symbol} 模式={'正式' if use_prd else '模擬'}")
+        log.info(f"[自動開單] {symbol} 模式={'正式' if use_prd else '模擬'} ({account_name})")
 
         # 部位上限 & 加倉檢查
         open_positions = await _get_open_positions(client)
         open_symbols   = {p["symbol"] for p in open_positions}
 
         if len(open_positions) >= cfg["ORDER_LIMIT"]:
-            log.info(
-                f"[自動開單] 部位已達上限 ({len(open_positions)}/{cfg['ORDER_LIMIT']})，略過 {symbol}"
-            )
-            return
+            msg = f"部位已達上限（{len(open_positions)}/{cfg['ORDER_LIMIT']}），略過 {symbol}"
+            log.info(f"[自動開單] {msg} ({account_name})")
+            return (False, msg)
 
         if symbol in open_symbols and not cfg.get("ADD_SAME_SYMBOL", False):
-            log.info(f"[自動開單] {symbol} 已有持倉且不允許加倉，略過")
-            return
+            msg = f"{symbol} 已有持倉，且設定不允許加倉"
+            log.info(f"[自動開單] {msg} ({account_name})")
+            return (False, msg)
 
         # 設定保證金模式（逐倉 ISOLATED / 全倉 CROSSED，預設全倉）
         margin_type = cfg.get("MARGIN_TYPE", "CROSSED").upper()
@@ -118,8 +127,9 @@ async def _place_orders_for_user(cfg: dict, symbol: str, signal: dict) -> None:
         qty                            = _floor_to_precision(raw_qty, qty_precision)
 
         if qty <= 0:
-            log.error(f"[自動開單] {symbol} 計算下單量無效 raw={raw_qty:.6f}，略過")
-            return
+            msg = f"下單量計算異常（raw={raw_qty:.6f}），請確認風險設定"
+            log.error(f"[自動開單] {symbol} {msg} ({account_name})")
+            return (False, msg)
 
         # 市價開多（確認倉位成立後才設置 SL/TP，最多重試 5 次）
         MAX_RETRIES = 5
@@ -142,13 +152,13 @@ async def _place_orders_for_user(cfg: dict, symbol: str, signal: dict) -> None:
                 )
                 log.info(
                     f"[自動開單] {symbol} 市價開倉成功 attempt={attempt}"
-                    f" filled_qty={filled_qty} fill={fill_price:.6f}"
+                    f" filled_qty={filled_qty} fill={fill_price:.6f} ({account_name})"
                 )
                 break
             except Exception as order_err:
                 if "-1007" not in str(order_err):
-                    log.error(f"[自動開單] {symbol} 開倉失敗: {order_err}")
-                    return
+                    log.error(f"[自動開單] {symbol} 開倉失敗: {order_err} ({account_name})")
+                    return (False, str(order_err))
                 # -1007：逾時，用 newClientOrderId 查詢訂單確認真實狀態
                 log.warning(
                     f"[自動開單] {symbol} 開倉逾時 (-1007) attempt={attempt}/{MAX_RETRIES}，查詢訂單..."
@@ -176,11 +186,14 @@ async def _place_orders_for_user(cfg: dict, symbol: str, signal: dict) -> None:
                     log.warning(f"[自動開單] {symbol} 查詢訂單失敗，重試開倉...")
 
         if fill_price is None:
-            log.error(f"[自動開單] {symbol} 重試 {MAX_RETRIES} 次後仍無法確認倉位，放棄")
-            return
+            msg = f"重試 {MAX_RETRIES} 次後仍無法確認倉位，已放棄"
+            log.error(f"[自動開單] {symbol} {msg} ({account_name})")
+            return (False, msg)
 
         # 等待倉位入帳後再掛條件單，避免 reduceOnly 因倉位尚未反映而被拒
         await asyncio.sleep(1)
+
+        warnings: list[str] = []
 
         # 止損單：closePosition=True，觸價時平全倉，不依賴數量精度
         try:
@@ -194,12 +207,14 @@ async def _place_orders_for_user(cfg: dict, symbol: str, signal: dict) -> None:
             )
             log.info(f"[自動開單] {symbol} 止損掛出 stopPrice={stop_loss:.6f} (closePosition)")
         except Exception as e:
-            log.error(f"[自動開單] {symbol} 止損掛出失敗: {e}")
+            log.error(f"[自動開單] {symbol} 止損掛出失敗: {e} ({account_name})")
+            warnings.append(f"⚠️ 止損設置失敗，請手動設置\n{e}")
 
         # 止盈單（分批）
         # 最後一筆用 closePosition=True 確保完全平倉；其餘用數量單 + reduceOnly
         tp_strategy = cfg.get("TP_STRATEGY", [])
         last_idx = len(tp_strategy) - 1
+        tp_failed = False
         for i, tp_entry in enumerate(tp_strategy):
             rr       = tp_entry["RR_RATIO"]
             pct      = tp_entry["PERCENT"]
@@ -236,27 +251,52 @@ async def _place_orders_for_user(cfg: dict, symbol: str, signal: dict) -> None:
                         f"[自動開單] {symbol} 止盈{i + 1} stopPrice={tp_price:.6f} qty={tp_qty}"
                     )
             except Exception as e:
-                log.error(f"[自動開單] {symbol} 止盈{i + 1} 掛出失敗: {e}")
+                log.error(f"[自動開單] {symbol} 止盈{i + 1} 掛出失敗: {e} ({account_name})")
+                tp_failed = True
+
+        if tp_failed:
+            warnings.append("⚠️ 部分止盈設置失敗，請手動確認")
+
+        fmt_price  = f"{fill_price:,.6f}".rstrip("0").rstrip(".")
+        margin_val = filled_qty * fill_price / leverage
+        fmt_margin = f"{margin_val:,.2f}"
+        success_msg = f"市價 {fmt_price} 已開，倉位價值 {fmt_margin} USDT"
+        if warnings:
+            success_msg += "\n" + "\n".join(warnings)
+        return (True, success_msg)
 
     except Exception as e:
-        log.error(f"[自動開單] {symbol} 開單失敗: {e}")
+        log.error(f"[自動開單] {symbol} 開單失敗: {e} ({account_name})")
+        return (False, str(e))
     finally:
         if client:
             await client.close_connection()
 
 
-async def place_orders_for_all_users(symbol: str, signal: dict) -> None:
-    """遍歷所有使用者設定，對符合條件的使用者在 Binance 期貨自動下單。"""
-    tasks = []
-    for _, cfg in get_all_trading_configs():
+async def place_orders_for_all_users(symbol: str, signal: dict) -> dict[int, tuple[bool, str]]:
+    """遍歷所有使用者設定，對符合條件的使用者在 Binance 期貨自動下單。
+
+    回傳 {chat_id: (success, message)}，供後續對每位使用者發送開單結果通知。
+    """
+    tasks: list = []
+    chat_ids: list[int] = []
+    for account_name, chat_id, cfg in get_all_trading_configs_with_chat_id():
         if not cfg.get("ENABLED"):
             continue
-        tasks.append(_place_orders_for_user(cfg, symbol, signal))
+        if chat_id is None:
+            continue
+        tasks.append(_place_orders_for_user(account_name, cfg, symbol, signal))
+        chat_ids.append(chat_id)
 
     if not tasks:
-        return
+        return {}
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    for i, r in enumerate(results):
+    results_raw = await asyncio.gather(*tasks, return_exceptions=True)
+    results: dict[int, tuple[bool, str]] = {}
+    for chat_id, r in zip(chat_ids, results_raw):
         if isinstance(r, Exception):
-            log.error(f"[自動開單] 使用者任務 {i} 發生未捕捉例外: {r}")
+            log.error(f"[自動開單] 使用者任務發生未捕捉例外: {r}")
+            results[chat_id] = (False, f"未預期錯誤: {r}")
+        elif r is not None:
+            results[chat_id] = r
+    return results

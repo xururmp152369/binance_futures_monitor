@@ -139,3 +139,26 @@ async def send_strategy_alert(symbol: str, signal: dict) -> bool:
     except Exception as e:
         log.error(f"[策略] 告警處理失敗 {symbol}: {e}")
         return False
+
+
+async def send_order_results(symbol: str, results: dict[int, tuple[bool, str]]) -> None:
+    """對每位使用者發送個別的開單結果通知。"""
+    if not results:
+        return
+    bot = models.bot
+    if bot is None:
+        return
+    sym_display = symbol.replace("USDT", "USDT.P")
+    for chat_id, (success, message) in results.items():
+        if success:
+            text = f"✅ *自動開倉成功* — `{sym_display}`\n{message}"
+        else:
+            text = f"❌ *自動開倉失敗* — `{sym_display}`\n{message}"
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            log.error(f"[策略] 開單結果通知失敗 chat_id={chat_id}: {e}")

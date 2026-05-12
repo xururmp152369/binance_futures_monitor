@@ -8,10 +8,18 @@ from ..setting.models import symbol_state, running, price_history, strategy_stat
 from ..extension.utils import setup_logging
 from collections import deque
 from ..strategy.state_machine import on_new_4h_candle, on_new_1h_candle, on_new_15m_candle, replay_historical_4h_candles
-from ..strategy.strategy_alerts import send_strategy_alert
+from ..strategy.strategy_alerts import send_strategy_alert, send_order_results
 from ..trading.order_manager import place_orders_for_all_users
 
 log = setup_logging()
+
+
+async def _fire_signal(sym: str, signal: dict) -> None:
+    """發送策略訊號、執行自動下單、對每位使用者回報開單結果。"""
+    await send_strategy_alert(sym, signal)
+    results = await place_orders_for_all_users(sym, signal)
+    await send_order_results(sym, results)
+
 
 def _is_rate_limit_error(error_msg: str) -> bool:
     """判斷錯誤訊息是否屬於 Binance API rate limit 類型。"""
@@ -331,8 +339,7 @@ async def handle_price_websocket(client, batch_symbols):
                                 sym, candle = result
                                 signal = on_new_15m_candle(sym, candle)
                                 if signal:
-                                    asyncio.create_task(send_strategy_alert(sym, signal))
-                                    asyncio.create_task(place_orders_for_all_users(sym, signal))
+                                    asyncio.create_task(_fire_signal(sym, signal))
 
                         elif stream_name.endswith("@kline_4h"):
                             last_symbol, last_interval = data["k"]["s"], "4h"
@@ -345,8 +352,7 @@ async def handle_price_websocket(client, batch_symbols):
                                 sym, candle = result
                                 signal = on_new_1h_candle(sym, candle)
                                 if signal:
-                                    asyncio.create_task(send_strategy_alert(sym, signal))
-                                    asyncio.create_task(place_orders_for_all_users(sym, signal))
+                                    asyncio.create_task(_fire_signal(sym, signal))
 
                     except asyncio.CancelledError:
                         log.info(f"批次 WebSocket 收到取消信號 | batch_symbols={batch_symbols[:3]}...")
