@@ -127,15 +127,22 @@ async def my_config(update: Update, _context: ContextTypes.DEFAULT_TYPE):
 
     exp_str = "永久有效" if acc.get("permanent") else datetime.fromtimestamp(acc["session_expires_at"]).strftime("%Y-%m-%d %H:%M")
 
-    tp_lines = "\n".join(
-        f"  {i}. {e['RR_RATIO']}R → 平倉 {e['PERCENT']}%"
-        + (" (最後一筆，全數平倉)" if i == len(cfg.get("TP_STRATEGY", [])) else "")
-        for i, e in enumerate(cfg.get("TP_STRATEGY", []), 1)
-    )
+    def _fmt_tp(tp_list: list, label: str) -> str:
+        if not tp_list:
+            return f"{label}：（未設定）"
+        lines = "\n".join(
+            f"  {i}. {e['RR_RATIO']}R → 平倉 {e['PERCENT']}%"
+            + (" (最後一筆，全數平倉)" if i == len(tp_list) else "")
+            for i, e in enumerate(tp_list, 1)
+        )
+        return f"{label}：\n{lines}"
+
     risk_label  = "固定投入金額" if cfg.get("RISK_TYPE") == 0 else "固定損失金額"
     blacklist   = cfg.get("SYMBOL_BLACKLIST") or []
     margin_type = cfg.get("MARGIN_TYPE", "CROSSED")
     order_mode  = cfg.get("ORDER_MODE", "DEV")
+    tp_long_str  = _fmt_tp(cfg.get("TP_STRATEGY", []), "止盈策略（多頭）")
+    tp_short_str = _fmt_tp(cfg.get("TP_STRATEGY_SHORT", []), "止盈策略（空頭）")
 
     text = (
         f"📄 *你的目前設定*\n\n"
@@ -151,7 +158,8 @@ async def my_config(update: Update, _context: ContextTypes.DEFAULT_TYPE):
         f"投入/損失金額：`{cfg.get('RISK_AMOUNT')} USDT`\n"
         f"槓桿：`{cfg.get('RISK_LEVERAGE')}x`\n"
         f"保證金模式：`{margin_type}`\n\n"
-        f"止盈策略：\n{tp_lines}\n\n"
+        f"{tp_long_str}\n\n"
+        f"{tp_short_str}\n\n"
         f"部位上限：`{cfg.get('ORDER_LIMIT')} 筆`\n"
         f"同幣種加倉：`{'是' if cfg.get('ADD_SAME_SYMBOL') else '否'}`\n"
         f"黑名單：{'、'.join(blacklist) if blacklist else '（無）'}\n"
@@ -163,7 +171,8 @@ async def my_config(update: Update, _context: ContextTypes.DEFAULT_TYPE):
 _ALL_CONFIG_KEYS = {
     "API_KEY", "SECRET_KEY", "PRD_API_KEY", "PRD_SECRET_KEY", "ORDER_MODE",
     "STRATEGY", "RISK_TYPE", "RISK_AMOUNT", "RISK_LEVERAGE", "MARGIN_TYPE",
-    "TP_STRATEGY", "ORDER_LIMIT", "ADD_SAME_SYMBOL", "SYMBOL_BLACKLIST", "ENABLED",
+    "TP_STRATEGY", "TP_STRATEGY_SHORT", "ORDER_LIMIT", "ADD_SAME_SYMBOL",
+    "SYMBOL_BLACKLIST", "ENABLED",
 }
 
 
@@ -218,12 +227,19 @@ async def handle_json_message(update: Update, _context: ContextTypes.DEFAULT_TYP
         )
         return
 
-    tp_lines = "\n".join(
-        f"  {i}. {e['RR_RATIO']}R → 平倉 {e['PERCENT']}%"
-        for i, e in enumerate(data.get("TP_STRATEGY", []), 1)
-    )
-    risk_label = "固定投入金額" if data.get("RISK_TYPE") == 0 else "固定損失金額"
+    def _fmt_tp_save(tp_list: list, label: str) -> str:
+        if not tp_list:
+            return f"{label}：（未設定）"
+        lines = "\n".join(
+            f"  {i}. {e['RR_RATIO']}R → 平倉 {e['PERCENT']}%"
+            for i, e in enumerate(tp_list, 1)
+        )
+        return f"{label}：\n{lines}"
+
+    risk_label  = "固定投入金額" if data.get("RISK_TYPE") == 0 else "固定損失金額"
     margin_type = data.get("MARGIN_TYPE", "CROSSED")
+    tp_long_str  = _fmt_tp_save(data.get("TP_STRATEGY", []), "止盈策略（多頭）")
+    tp_short_str = _fmt_tp_save(data.get("TP_STRATEGY_SHORT", []), "止盈策略（空頭）")
 
     await update.message.reply_text(
         f"✅ *設定已儲存！*\n\n"
@@ -232,7 +248,8 @@ async def handle_json_message(update: Update, _context: ContextTypes.DEFAULT_TYP
         f"投入/損失金額：`{data.get('RISK_AMOUNT')} USDT`\n"
         f"槓桿：`{data.get('RISK_LEVERAGE')}x`\n"
         f"保證金模式：`{margin_type}`\n\n"
-        f"止盈策略：\n{tp_lines}\n\n"
+        f"{tp_long_str}\n\n"
+        f"{tp_short_str}\n\n"
         f"部位上限：`{data.get('ORDER_LIMIT')} 筆`\n"
         f"自動開單：`{'開啟' if data.get('ENABLED') else '關閉'}`",
         parse_mode="Markdown",
