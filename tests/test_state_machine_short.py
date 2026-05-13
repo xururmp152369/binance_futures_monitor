@@ -255,6 +255,31 @@ class TestShortMethodB:
         assert st["consolidation_high"] == pytest.approx(old_top,    rel=1e-6)
         assert st["consolidation_low"]  == pytest.approx(old_bottom, rel=1e-6)
 
+    def test_sub_run_exceeds_bottom_extends_instead(self):
+        """空頭盤整內的 sub-run 若直接跌破 consolidation_low → 整體延伸，頂部不變。"""
+        trigger_short_tracking(SYM, TS0, base=100.0, drop_pct=9.0)
+        old_bottom = _st()["consolidation_low"]
+        old_top    = _st()["consolidation_high"]
+
+        # 開始一個 sub-run（先下跌一根，run_low 已設定）
+        ts_base   = TS0 + 3 * _4H_MS
+        sub_open  = old_bottom * 1.05
+        sub_close = round(sub_open * 0.97, 8)
+        sub_high  = round(sub_open * 1.002, 8)
+        sub_low   = round(sub_close * 0.998, 8)
+        on_new_4h_candle_short(SYM, (ts_base, sub_open, sub_high, sub_low, sub_close))
+
+        # 下一根直接跌破 consolidation_low → 整體延伸（不是 Method B）
+        ts2     = ts_base + _4H_MS
+        new_low = old_bottom * 0.95
+        on_new_4h_candle_short(SYM, (ts2, sub_close, sub_close * 1.002, new_low, new_low * 1.002))
+
+        st = _st()
+        assert st["phase"] == StrategyPhase.TRACKING
+        assert st["consolidation_low"]      == pytest.approx(new_low,  rel=1e-6)
+        assert st["consolidation_high"]     == pytest.approx(old_top,  rel=1e-6)
+        assert st["consolidation_start_ts"] == pytest.approx(ts2 / 1000, rel=1e-6)
+
 
 # ─── Type 1 Short 訊號 ────────────────────────────────────────────────────────
 
@@ -302,3 +327,12 @@ class TestType1ShortSignal:
         assert r1 is not None
         candle2 = (ts_candle + 15 * 60 * 1000, bottom * 0.99, bottom, bottom * 0.98, bottom * 0.985, 400.0)
         assert on_new_15m_candle_short(SYM, candle2) is None
+
+    def test_no_signal_when_insufficient_history(self):
+        """15m 歷史資料不足 193 根 → 不觸發（即使跌破且放量）。"""
+        self._setup_ready()
+        setup_symbol_state(SYM, kline_15m_ohlc=make_15m_ohlc_deque(count=100, base_volume=100.0))
+        bottom    = _st()["consolidation_low"]
+        ts_candle = TS0 + 14 * 3600 * 1000
+        candle = (ts_candle, bottom, bottom * 1.005, bottom * 0.985, bottom * 0.99, 400.0)
+        assert on_new_15m_candle_short(SYM, candle) is None
