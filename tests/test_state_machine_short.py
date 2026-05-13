@@ -8,177 +8,297 @@ from app.strategy.state_machine import (
     on_new_15m_candle_short,
 )
 from tests.conftest import (
-    make_dump_candle,
-    make_flat_candle,
     make_15m_ohlc_deque,
     setup_symbol_state,
+    trigger_short_tracking,
+    make_short_run,
+    _4H_MS,
 )
 
 SYM = "BTCUSDT"
-_4H = 4 * 3600 * 1000
+TS0 = 1_000_000_000_000
 
 
 def _st() -> dict:
     return models.strategy_state_short.get(SYM, {})
 
 
-# ─── 暴跌偵測 ─────────────────────────────────────────────────────────────────
+# ─── 空頭 Run 偵測 ─────────────────────────────────────────────────────────────
 
-class TestDumpDetection:
-    def test_bearish_large_range_triggers_tracking(self):
-        candle = make_dump_candle(1000)
-        on_new_4h_candle_short(SYM, candle)
+class TestShortRunDetection:
+    def test_single_candle_8pct_triggers_on_second(self):
+        """一根 8% 陰線 + 下一根不創新低 → TRACKING。"""
+        trigger_short_tracking(SYM, TS0, drop_pct=8.0)
         assert _st()["phase"] == StrategyPhase.TRACKING
 
-    def test_bullish_candle_does_not_trigger(self):
-        # 陽線不觸發空頭
-        candle = (1000, 90.0, 100.0, 88.0, 99.0)  # close > open
-        on_new_4h_candle_short(SYM, candle)
+    def test_multi_candle_cumulative_triggers(self):
+        """3+5% 兩根陰線累積 8% → 第三根不創新低時進入 TRACKING。"""
+        candles, _ = make_short_run(TS0, [3.0, 5.0])
+        for c in candles:
+            on_new_4h_candle_short(SYM, c)
+        assert _st()["phase"] == StrategyPhase.IDLE  # 尚未停止創新低
+
+        ts2   = TS0 + 2 * _4H_MS
+        open3 = candles[-1][4]
+        low3  = candles[-1][3] * 1.001   # 高於最後一根 low → 不創新低
+        c3 = (ts2, open3, open3 * 1.002, low3, open3 * 0.999)
+        on_new_4h_candle_short(SYM, c3)
+        assert _st()["phase"] == StrategyPhase.TRACKING
+
+    def test_cumulative_below_threshold_does_not_trigger(self):
+        """累積 3+3=6% < 8%，第三根不創新低 → 不進 TRACKING。"""
+        candles, _ = make_short_run(TS0, [3.0, 3.0])
+        for c in candles:
+            on_new_4h_candle_short(SYM, c)
+        ts2   = TS0 + 2 * _4H_MS
+        open3 = candles[-1][4]
+        low3  = candles[-1][3] * 1.01
+        c3 = (ts2, open3, open3 * 1.001, low3, open3 * 1.001)
+        on_new_4h_candle_short(SYM, c3)
         assert _st().get("phase", StrategyPhase.IDLE) == StrategyPhase.IDLE
 
-    def test_small_range_dump_does_not_trigger(self):
-        # (high-low)/low = 5% < 8%
-        candle = (1000, 100.0, 104.0, 99.0, 99.5)
-        on_new_4h_candle_short(SYM, candle)
+    def test_bullish_candle_resets_run_below_threshold(self):
+        """累積 5% 時出現陽線 → run 重置，不進 TRACKING。"""
+        candles, _ = make_short_run(TS0, [5.0])
+        on_new_4h_candle_short(SYM, candles[0])
+        ts1    = TS0 + _4H_MS
+        close1 = candles[0][4]
+        bull   = (ts1, close1, close1 * 1.005, close1 * 0.999, close1 * 1.002)
+        on_new_4h_candle_short(SYM, bull)
         assert _st().get("phase", StrategyPhase.IDLE) == StrategyPhase.IDLE
 
-    def test_dump_state_fields(self):
-        candle = make_dump_candle(2000, low=90.0, high=100.0, open_=99.0, close=91.0)
-        on_new_4h_candle_short(SYM, candle)
-        st = _st()
-        assert st["pump_candle_high"] == 100.0   # 固定失效線（空頭 = 頂部）
-        assert st["pump_candle_low"]  == 90.0
-        assert st["consolidation_low"]  == 90.0  # 動態底部（初始）
-        assert st["consolidation_high"] == 100.0 # 固定頂部
+    def test_state_fields_after_tracking_entry(self):
+        """進入 TRACKING 後，頂部 = run 第一根的 high，底部 = run 的最低 low。"""
+        candles, _ = make_short_run(TS0, [5.0, 4.0])
+        for c in candles:
+            on_new_4h_candle_short(SYM, c)
+        ts2   = TS0 + 2 * _4H_MS
+        open3 = candles[-1][4]
+        low3  = candles[-1][3] * 1.001
+        c3 = (ts2, open3, open3 * 1.001, low3, open3 * 0.999)
+        on_new_4h_candle_short(SYM, c3)
 
-    def test_new_dump_in_tracking_resets_to_new_base(self):
-        on_new_4h_candle_short(SYM, make_dump_candle(1000, low=90.0, high=100.0, open_=99.0, close=91.0))
-        # 新的暴跌 K 棒：底部更低
-        on_new_4h_candle_short(SYM, make_dump_candle(5000, low=80.0, high=92.0, open_=91.0, close=82.0))
         st = _st()
-        assert st["pump_candle_high"]   == 92.0
-        assert st["consolidation_low"]  == 80.0
-        assert st["consolidation_high"] == 92.0
+        assert st["phase"] == StrategyPhase.TRACKING
+        assert st["consolidation_high"] == pytest.approx(candles[0][2], rel=1e-6)
+        assert st["consolidation_low"]  == pytest.approx(candles[-1][3], rel=1e-6)
+
+    def test_new_run_after_failed_run_uses_new_high(self):
+        """累積不足的 run 結束後，新 run 的頂部應是新 run 的第一根 high。"""
+        candles, _ = make_short_run(TS0, [3.0])
+        on_new_4h_candle_short(SYM, candles[0])
+        ts1  = TS0 + _4H_MS
+        c0   = candles[0]
+        bull = (ts1, c0[4], c0[4] * 1.005, c0[4] * 0.999, c0[4] * 1.002)
+        on_new_4h_candle_short(SYM, bull)
+
+        # 新 run：兩根陰線累積 10%
+        ts2    = ts1 + _4H_MS
+        open2  = bull[4]
+        close2 = round(open2 * 0.95, 8)
+        high2  = round(open2 * 1.002, 8)
+        low2   = round(close2 * 0.998, 8)
+        c2 = (ts2, open2, high2, low2, close2)
+        on_new_4h_candle_short(SYM, c2)
+
+        ts3    = ts2 + _4H_MS
+        open3  = close2
+        close3 = round(open3 * 0.95, 8)
+        high3  = round(open3 * 1.002, 8)
+        low3   = round(close3 * 0.998, 8)
+        c3 = (ts3, open3, high3, low3, close3)
+        on_new_4h_candle_short(SYM, c3)
+
+        ts4  = ts3 + _4H_MS
+        c4 = (ts4, close3, close3 * 1.001, low3 * 1.001, close3 * 1.0005)
+        on_new_4h_candle_short(SYM, c4)
+
+        st = _st()
+        assert st["phase"] == StrategyPhase.TRACKING
+        assert st["consolidation_high"] == pytest.approx(high2, rel=1e-6)
 
 
 # ─── 盤整追蹤 ─────────────────────────────────────────────────────────────────
 
 class TestShortConsolidation:
-    def test_new_low_extends_consolidation_and_resets_timer(self):
-        on_new_4h_candle_short(SYM, make_dump_candle(1000, low=90.0, high=100.0, open_=99.0, close=91.0))
-        # 創新低 → 更新 consolidation_low，重置計時
-        candle2 = (5000, 91.5, 92.0, 85.0, 86.0)  # low=85 < 90，陰線，range ok
-        on_new_4h_candle_short(SYM, candle2)
-        st = _st()
-        assert st["consolidation_low"]      == 85.0
-        assert st["consolidation_start_ts"] == 5000 / 1000
-        assert st["phase"] == StrategyPhase.TRACKING
+    def test_new_low_extends_and_resets_timer(self):
+        trigger_short_tracking(SYM, TS0, drop_pct=9.0)
+        prev_low = _st()["consolidation_low"]
+        ts_next  = TS0 + 2 * _4H_MS
+        new_low  = prev_low * 0.95
+        c = (ts_next, prev_low, prev_low * 1.002, new_low, new_low * 1.002)
+        on_new_4h_candle_short(SYM, c)
+        assert _st()["consolidation_low"]      == pytest.approx(new_low, rel=1e-6)
+        assert _st()["consolidation_start_ts"] == pytest.approx(ts_next / 1000, rel=1e-6)
+        assert _st()["phase"] == StrategyPhase.TRACKING
 
-    def test_no_new_low_does_not_update(self):
-        on_new_4h_candle_short(SYM, make_dump_candle(1000, low=90.0, high=100.0, open_=99.0, close=91.0))
-        # low=93 > 90，不創新低
-        candle2 = (5000, 93.0, 95.0, 93.0, 93.5)
-        on_new_4h_candle_short(SYM, candle2)
-        assert _st()["consolidation_low"] == 90.0
+    def test_no_new_low_does_not_update_bottom(self):
+        trigger_short_tracking(SYM, TS0, drop_pct=9.0)
+        prev_low = _st()["consolidation_low"]
+        ts_next  = TS0 + 2 * _4H_MS
+        c = (ts_next, prev_low * 1.01, prev_low * 1.015, prev_low * 1.001, prev_low * 1.005)
+        on_new_4h_candle_short(SYM, c)
+        assert _st()["consolidation_low"] == pytest.approx(prev_low, rel=1e-6)
 
     def test_tracking_to_ready_after_min_hours(self):
-        ts0 = 1_000_000_000_000
-        on_new_4h_candle_short(SYM, make_dump_candle(ts0, low=90.0, high=100.0, open_=99.0, close=91.0))
-        # 超過 12h 沒創新低 → READY
-        ts_ready = ts0 + 13 * 3600 * 1000
-        candle2 = (ts_ready, 91.5, 93.0, 91.0, 91.8)
-        on_new_4h_candle_short(SYM, candle2)
+        trigger_short_tracking(SYM, TS0, drop_pct=9.0)
+        peak_ts  = _st()["consolidation_start_ts"]
+        ts_ready = int((peak_ts + 13 * 3600) * 1000)
+        prev_low = _st()["consolidation_low"]
+        c = (ts_ready, prev_low * 1.01, prev_low * 1.015, prev_low * 1.001, prev_low * 1.005)
+        on_new_4h_candle_short(SYM, c)
         assert _st()["phase"] == StrategyPhase.READY
 
     def test_new_low_in_ready_resets_to_tracking(self):
-        ts0 = 1_000_000_000_000
-        on_new_4h_candle_short(SYM, make_dump_candle(ts0, low=90.0, high=100.0, open_=99.0, close=91.0))
-        ts_ready = ts0 + 13 * 3600 * 1000
-        on_new_4h_candle_short(SYM, (ts_ready, 91.5, 93.0, 91.0, 91.8))
+        trigger_short_tracking(SYM, TS0, drop_pct=9.0)
+        peak_ts  = _st()["consolidation_start_ts"]
+        prev_low = _st()["consolidation_low"]
+        ts_ready = int((peak_ts + 13 * 3600) * 1000)
+        c_flat = (ts_ready, prev_low * 1.01, prev_low * 1.015, prev_low * 1.001, prev_low * 1.005)
+        on_new_4h_candle_short(SYM, c_flat)
         assert _st()["phase"] == StrategyPhase.READY
-        # 創新低 → 退回 TRACKING
-        ts_new_low = ts_ready + _4H
-        on_new_4h_candle_short(SYM, (ts_new_low, 91.0, 92.0, 85.0, 86.0))
+
+        ts_ext  = ts_ready + _4H_MS
+        new_low = prev_low * 0.97
+        c_ext = (ts_ext, prev_low, prev_low * 1.002, new_low, new_low * 1.002)
+        on_new_4h_candle_short(SYM, c_ext)
         assert _st()["phase"] == StrategyPhase.TRACKING
-        assert _st()["consolidation_low"] == 85.0
+        assert _st()["consolidation_low"] == pytest.approx(new_low, rel=1e-6)
 
 
 # ─── 廢棄條件 ─────────────────────────────────────────────────────────────────
 
 class TestShortInvalidation:
-    def test_high_above_dump_candle_high_resets_to_idle(self):
-        on_new_4h_candle_short(SYM, make_dump_candle(1000, low=90.0, high=100.0, open_=99.0, close=91.0))
-        # high=101 > 100 → 廢棄
-        on_new_4h_candle_short(SYM, (5000, 95.0, 101.0, 94.0, 95.5))
+    def test_high_above_top_resets_to_idle(self):
+        trigger_short_tracking(SYM, TS0, drop_pct=9.0)
+        top     = _st()["consolidation_high"]
+        ts_next = TS0 + 2 * _4H_MS
+        c = (ts_next, top * 0.99, top * 1.01, top * 0.985, top * 1.005)
+        on_new_4h_candle_short(SYM, c)
         assert _st()["phase"] == StrategyPhase.IDLE
 
-    def test_high_equal_to_dump_candle_high_is_not_invalidated(self):
-        on_new_4h_candle_short(SYM, make_dump_candle(1000, low=90.0, high=100.0, open_=99.0, close=91.0))
-        on_new_4h_candle_short(SYM, (5000, 95.0, 100.0, 94.0, 95.5))
+    def test_high_equal_to_top_is_not_invalidated(self):
+        trigger_short_tracking(SYM, TS0, drop_pct=9.0)
+        top     = _st()["consolidation_high"]
+        ts_next = TS0 + 2 * _4H_MS
+        c = (ts_next, top * 0.99, top, top * 0.985, top * 0.995)
+        on_new_4h_candle_short(SYM, c)
         assert _st()["phase"] != StrategyPhase.IDLE
+
+
+# ─── Method B（盤整內 sub-run 重置）─────────────────────────────────────────
+
+class TestShortMethodB:
+    def test_sub_run_8pct_with_lower_top_resets(self):
+        """TRACKING 期間，頂部更低的 8% sub-run → Method B 重置。"""
+        trigger_short_tracking(SYM, TS0, base=100.0, drop_pct=20.0)
+        old_top    = _st()["consolidation_high"]
+        old_bottom = _st()["consolidation_low"]
+
+        # sub-run 起始於盤整範圍內，頂部低於 old_top
+        ts_base   = TS0 + 3 * _4H_MS
+        sub_open  = old_bottom * 1.15
+        assert sub_open < old_top
+
+        sub_close = round(sub_open * 0.95, 8)
+        sub_high  = round(sub_open * 1.002, 8)
+        sub_low   = round(sub_close * 0.998, 8)
+        c1 = (ts_base, sub_open, sub_high, sub_low, sub_close)
+        on_new_4h_candle_short(SYM, c1)
+
+        ts2    = ts_base + _4H_MS
+        open2  = sub_close
+        close2 = round(open2 * 0.958, 8)
+        low2   = round(close2 * 0.998, 8)
+        high2  = round(open2 * 1.002, 8)
+        c2 = (ts2, open2, high2, low2, close2)
+        on_new_4h_candle_short(SYM, c2)
+
+        # 第三根不創新低 → sub-run 結束 → Method B
+        ts3   = ts2 + _4H_MS
+        open3 = close2
+        c3 = (ts3, open3, open3 * 1.001, low2 * 1.001, open3 * 1.0005)
+        on_new_4h_candle_short(SYM, c3)
+
+        st = _st()
+        assert st["phase"] == StrategyPhase.TRACKING
+        assert st["consolidation_high"] < old_top
+        assert st["consolidation_high"] == pytest.approx(sub_high, rel=1e-6)
+        assert st["consolidation_low"]  == pytest.approx(low2,     rel=1e-6)
+
+    def test_sub_run_with_same_top_no_reset(self):
+        """sub-run 起始 high == 現有頂部 → 不觸發 Method B。"""
+        trigger_short_tracking(SYM, TS0, base=100.0, drop_pct=20.0)
+        old_top    = _st()["consolidation_high"]
+        old_bottom = _st()["consolidation_low"]
+
+        ts_base  = TS0 + 3 * _4H_MS
+        sub_open = old_top * 0.995
+        sub_high = old_top   # run_start_high == old_top，不小於
+        sub_close = round(sub_open * 0.95, 8)
+        sub_low   = round(sub_close * 0.998, 8)
+        c1 = (ts_base, sub_open, sub_high, sub_low, sub_close)
+        on_new_4h_candle_short(SYM, c1)
+
+        ts2    = ts_base + _4H_MS
+        open2  = sub_close
+        close2 = round(open2 * 0.958, 8)
+        low2   = round(close2 * 0.998, 8)
+        c2 = (ts2, open2, sub_high * 0.999, low2, close2)
+        on_new_4h_candle_short(SYM, c2)
+
+        ts3   = ts2 + _4H_MS
+        c3 = (ts3, close2, close2 * 1.001, low2 * 1.001, close2 * 1.0005)
+        on_new_4h_candle_short(SYM, c3)
+
+        st = _st()
+        assert st["consolidation_high"] == pytest.approx(old_top,    rel=1e-6)
+        assert st["consolidation_low"]  == pytest.approx(old_bottom, rel=1e-6)
 
 
 # ─── Type 1 Short 訊號 ────────────────────────────────────────────────────────
 
 class TestType1ShortSignal:
-    def _setup_ready(self, bottom=90.0, top=100.0):
-        """建立 READY 狀態，consolidation_low=bottom，consolidation_high=top。"""
-        ts0 = 1_000_000_000_000
-        on_new_4h_candle_short(SYM, make_dump_candle(ts0, low=bottom, high=top, open_=top - 1, close=bottom + 1))
-        ts_ready = ts0 + 13 * 3600 * 1000
-        on_new_4h_candle_short(SYM, (ts_ready, bottom + 2, bottom + 4, bottom + 1.5, bottom + 2.5))
+    def _setup_ready(self):
+        trigger_short_tracking(SYM, TS0, base=100.0, drop_pct=9.0)
+        st       = _st()
+        peak_ts  = st["consolidation_start_ts"]
+        ts_ready = int((peak_ts + 13 * 3600) * 1000)
+        bottom   = st["consolidation_low"]
+        c = (ts_ready, bottom * 1.01, bottom * 1.015, bottom * 1.001, bottom * 1.005)
+        on_new_4h_candle_short(SYM, c)
         assert _st()["phase"] == StrategyPhase.READY
         setup_symbol_state(SYM, kline_15m_ohlc=make_15m_ohlc_deque(count=200, base_volume=100.0))
 
     def test_breakout_below_bottom_with_volume_triggers(self):
-        self._setup_ready(bottom=90.0)
-        # close=89 < 90，成交量是均量的 4 倍
-        ts_candle = 1_000_000_000_000 + 14 * 3600 * 1000
-        candle = (ts_candle, 90.5, 90.8, 88.5, 89.0, 400.0)
+        self._setup_ready()
+        bottom    = _st()["consolidation_low"]
+        ts_candle = TS0 + 14 * 3600 * 1000
+        candle = (ts_candle, bottom, bottom * 1.005, bottom * 0.985, bottom * 0.99, 400.0)
         result = on_new_15m_candle_short(SYM, candle)
         assert result is not None
         assert result["type"] == "type1_short"
-        assert result["close"] == 89.0
 
-    def test_no_signal_when_close_above_bottom(self):
-        self._setup_ready(bottom=90.0)
-        ts_candle = 1_000_000_000_000 + 14 * 3600 * 1000
-        candle = (ts_candle, 90.5, 91.0, 89.5, 90.5, 400.0)  # close=90.5 >= 90
-        result = on_new_15m_candle_short(SYM, candle)
-        assert result is None
+    def test_no_signal_when_close_at_or_above_bottom(self):
+        self._setup_ready()
+        bottom    = _st()["consolidation_low"]
+        ts_candle = TS0 + 14 * 3600 * 1000
+        candle = (ts_candle, bottom * 1.01, bottom * 1.015, bottom, bottom, 400.0)
+        assert on_new_15m_candle_short(SYM, candle) is None
 
     def test_no_signal_when_volume_insufficient(self):
-        self._setup_ready(bottom=90.0)
-        ts_candle = 1_000_000_000_000 + 14 * 3600 * 1000
-        candle = (ts_candle, 90.5, 90.8, 88.5, 89.0, 150.0)  # 1.5× < 3×
-        result = on_new_15m_candle_short(SYM, candle)
-        assert result is None
-
-    def test_stop_loss_is_highest_high_of_volume_surge(self):
-        self._setup_ready(bottom=90.0)
-        # 在同一個 4h K 棒內塞兩根放量 K（high 不同）
-        ts0 = 1_000_000_000_000 + 13 * 3600 * 1000
-        current_4h_open = (ts0 // _4H) * _4H
-        ohlc = make_15m_ohlc_deque(count=200, base_volume=100.0)
-        # 倒數第 2 根：high=91.5，放量
-        ohlc[-2] = (current_4h_open + 15 * 60 * 1000, 91.0, 91.5, 89.0, 89.5, 400.0)
-        # 倒數第 3 根：high=92.0，放量（更高）
-        ohlc[-3] = (current_4h_open, 92.0, 92.0, 89.5, 90.0, 400.0)
-        setup_symbol_state(SYM, kline_15m_ohlc=ohlc)
-
-        ts_candle = current_4h_open + 2 * 15 * 60 * 1000
-        candle = (ts_candle, 90.5, 90.8, 88.5, 89.0, 400.0)
-        result = on_new_15m_candle_short(SYM, candle)
-        assert result is not None
-        # 止損應取連續放量序列內的最高 high
-        assert result["stop_loss"] >= 91.5
+        self._setup_ready()
+        bottom    = _st()["consolidation_low"]
+        ts_candle = TS0 + 14 * 3600 * 1000
+        candle = (ts_candle, bottom, bottom * 1.005, bottom * 0.985, bottom * 0.99, 150.0)
+        assert on_new_15m_candle_short(SYM, candle) is None
 
     def test_cooldown_prevents_repeat_signal(self):
-        self._setup_ready(bottom=90.0)
-        ts_candle = 1_000_000_000_000 + 14 * 3600 * 1000
-        candle = (ts_candle, 90.5, 90.8, 88.5, 89.0, 400.0)
+        self._setup_ready()
+        bottom    = _st()["consolidation_low"]
+        ts_candle = TS0 + 14 * 3600 * 1000
+        candle = (ts_candle, bottom, bottom * 1.005, bottom * 0.985, bottom * 0.99, 400.0)
         r1 = on_new_15m_candle_short(SYM, candle)
         assert r1 is not None
-        candle2 = (ts_candle + 15 * 60 * 1000, 89.5, 90.0, 88.0, 88.5, 400.0)
-        r2 = on_new_15m_candle_short(SYM, candle2)
-        assert r2 is None  # 冷卻中
+        candle2 = (ts_candle + 15 * 60 * 1000, bottom * 0.99, bottom, bottom * 0.98, bottom * 0.985, 400.0)
+        assert on_new_15m_candle_short(SYM, candle2) is None

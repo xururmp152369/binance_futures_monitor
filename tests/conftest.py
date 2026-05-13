@@ -13,6 +13,8 @@ _DEFAULT_RUNTIME_CONFIG = {
     "STRATEGY_COOLDOWN":       14400,
 }
 
+_4H_MS = 4 * 3600 * 1000
+
 
 @pytest.fixture(autouse=True)
 def reset_global_state():
@@ -30,16 +32,6 @@ def reset_global_state():
 # ── 共用 Helper ────────────────────────────────────────────────
 
 def make_4h_candle(ts, open_, high, low, close):
-    return (ts, open_, high, low, close)
-
-
-def make_pump_candle(ts, low=100.0, high=110.0, open_=100.0, close=108.0):
-    """預設：(high-low)/low = 10% >= 8%，陽線。"""
-    return (ts, open_, high, low, close)
-
-
-def make_dump_candle(ts, low=90.0, high=100.0, open_=99.0, close=91.0):
-    """預設：(high-low)/low ≈ 11.1% >= 8%，陰線。"""
     return (ts, open_, high, low, close)
 
 
@@ -74,3 +66,114 @@ def setup_symbol_state(symbol, ema_4h=None, last_price=105.0, kline_15m_ohlc=Non
         "kline_1h_ohlc":  deque(maxlen=100),
         "kline_4h_ohlc":  deque(maxlen=50),
     }
+
+
+# ── 多頭 Run 輔助 ──────────────────────────────────────────────
+
+def make_long_run(ts0, gains, base=100.0):
+    """產生連續陽線的多頭 run。
+
+    gains: 每根 K 棒的漲幅百分比清單（正數代表陽線）。
+    傳回 (candles, final_price)，其中每根 candle 的 open=前根 close，
+    high = close * 1.002，low = open * 0.998。
+    """
+    candles = []
+    price = base
+    for i, gain_pct in enumerate(gains):
+        open_ = price
+        close = round(open_ * (1 + gain_pct / 100), 8)
+        high  = round(max(open_, close) * 1.002, 8)
+        low   = round(min(open_, close) * 0.998, 8)
+        ts    = ts0 + i * _4H_MS
+        candles.append((ts, open_, high, low, close))
+        price = close
+    return candles, price
+
+
+def make_short_run(ts0, drops, base=100.0):
+    """產生連續陰線的空頭 run。
+
+    drops: 每根 K 棒的跌幅百分比清單（正數代表跌幅）。
+    傳回 (candles, final_price)。
+    """
+    candles = []
+    price = base
+    for i, drop_pct in enumerate(drops):
+        open_ = price
+        close = round(open_ * (1 - drop_pct / 100), 8)
+        high  = round(max(open_, close) * 1.002, 8)
+        low   = round(min(open_, close) * 0.998, 8)
+        ts    = ts0 + i * _4H_MS
+        candles.append((ts, open_, high, low, close))
+        price = close
+    return candles, price
+
+
+def feed_long_run(symbol, ts0, gains, base=100.0):
+    """直接將多頭 run 餵入狀態機，回傳最後收盤價。"""
+    from app.strategy.state_machine import on_new_4h_candle
+    candles, final = make_long_run(ts0, gains, base)
+    for c in candles:
+        on_new_4h_candle(symbol, c)
+    return final
+
+
+def feed_short_run(symbol, ts0, drops, base=100.0):
+    """直接將空頭 run 餵入狀態機，回傳最後收盤價。"""
+    from app.strategy.state_machine import on_new_4h_candle_short
+    candles, final = make_short_run(ts0, drops, base)
+    for c in candles:
+        on_new_4h_candle_short(symbol, c)
+    return final
+
+
+def trigger_long_tracking(symbol, ts0, base=100.0, gain_pct=9.0):
+    """建立最小多頭 TRACKING 狀態：一根 gain_pct% 陽線 + 一根不創新高的中性 K 棒。
+
+    回傳 (consolidation_low, consolidation_high, ts_peak)。
+    """
+    from app.strategy.state_machine import on_new_4h_candle
+    # 第一根：陽線，gain_pct%
+    open1  = base
+    close1 = round(open1 * (1 + gain_pct / 100), 8)
+    high1  = round(close1 * 1.002, 8)
+    low1   = round(open1  * 0.998, 8)
+    c1 = (ts0, open1, high1, low1, close1)
+    on_new_4h_candle(symbol, c1)
+
+    # 第二根：不創新高（high < high1），觸發 run 達標 → TRACKING
+    ts1    = ts0 + _4H_MS
+    open2  = close1
+    close2 = round(open2 * 1.001, 8)       # 微陽
+    high2  = round(high1 * 0.999, 8)       # 低於 high1
+    low2   = round(open2 * 0.998, 8)
+    c2 = (ts1, open2, high2, low2, close2)
+    on_new_4h_candle(symbol, c2)
+
+    return low1, high1, ts0 / 1000
+
+
+def trigger_short_tracking(symbol, ts0, base=100.0, drop_pct=9.0):
+    """建立最小空頭 TRACKING 狀態：一根 drop_pct% 陰線 + 一根不創新低的中性 K 棒。
+
+    回傳 (consolidation_high, consolidation_low, ts_peak)。
+    """
+    from app.strategy.state_machine import on_new_4h_candle_short
+    # 第一根：陰線，drop_pct%
+    open1  = base
+    close1 = round(open1 * (1 - drop_pct / 100), 8)
+    high1  = round(open1  * 1.002, 8)
+    low1   = round(close1 * 0.998, 8)
+    c1 = (ts0, open1, high1, low1, close1)
+    on_new_4h_candle_short(symbol, c1)
+
+    # 第二根：不創新低（low > low1），觸發 run 達標 → TRACKING
+    ts1    = ts0 + _4H_MS
+    open2  = close1
+    close2 = round(open2 * 0.999, 8)       # 微陰
+    low2   = round(low1  * 1.001, 8)       # 高於 low1
+    high2  = round(open2 * 1.002, 8)
+    c2 = (ts1, open2, high2, low2, close2)
+    on_new_4h_candle_short(symbol, c2)
+
+    return high1, low1, ts0 / 1000

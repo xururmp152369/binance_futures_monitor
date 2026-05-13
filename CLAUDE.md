@@ -80,20 +80,43 @@ data/
 
 ## 策略狀態機規格
 
+### 觸發偵測邏輯（Run 追蹤）
+
+單根 K 棒不再直接觸發，改為追蹤**連續趨勢累積漲/跌幅**：
+
+**多頭 Run（做多）**
+1. 陽線（close > open）啟動 run，記錄第一根的 open / low / high
+2. 後續每根 4h K 棒：
+   - 若 high > run_high → 創新高，延伸 run（更新 run_high）
+   - 若 high ≤ run_high → run 停止。計算累積漲幅 = `(run_high - run_start_open) / run_start_open`
+     - 累積 ≥ PUMP_THRESHOLD% → 進入 TRACKING
+     - 累積 < PUMP_THRESHOLD% → 重置 run（若本根為陽線則立即開始新 run）
+3. `consolidation_low`  = run 第一根的 low（廢棄線）
+4. `consolidation_high` = run 期間最高 high
+5. `consolidation_start_ts` = 最後一次創新高的時間（16h 計時起點）
+
+**空頭 Run（做空，完全對稱）**
+1. 陰線（close < open）啟動 run
+2. 後續：low < run_low → 延伸；low ≥ run_low → run 停止，檢查累積跌幅
+3. `consolidation_high` = run 第一根的 high（廢棄線）
+4. `consolidation_low`  = run 期間最低 low
+
 ### 狀態轉換
 
 **多頭（strategy_state）**
 ```
 IDLE
- │ 觸發：4h K 棒為陽線，且 (high-low)/low >= PUMP_THRESHOLD%
+ │ 觸發：連續創新高的陽線 run，累積漲幅 >= PUMP_THRESHOLD%，且遇到第一根不創新高的 K 棒
  ▼
 TRACKING（不限時長，持續追蹤盤整）
- │ 廢棄：4h K 棒 low < pump_candle_low → 回 IDLE（即時掃描亦會觸發）
+ │ 廢棄：4h K 棒 low < consolidation_low → 回 IDLE（即時掃描亦會觸發）
  │ 延伸：後續 4h K 棒創新高 → 更新 consolidation_high，重置盤整計時
+ │ Method B：盤整內出現新 >= PUMP_THRESHOLD% 的 sub-run，且起始 low > 現有 consolidation_low
+ │           → 完整重置為新 run（底部上移，頂部更新，16h 計時重置）
  │ 進展：停止創新高後，已盤整 >= CONSOLIDATION_MIN_HOURS(16h)
  ▼
 READY（監控進場訊號）
- │ 廢棄：同上（含創新高時退回 TRACKING）
+ │ 廢棄：同上（含創新高時退回 TRACKING；Method B 同樣適用）
  ├─ 每根 15m 收盤 → Type 1 帶量突破（做多）
  └─ 每根 1h  收盤 → Type 2 均線反彈（做多）
 ```
@@ -101,11 +124,13 @@ READY（監控進場訊號）
 **空頭（strategy_state_short）**
 ```
 IDLE
- │ 觸發：4h K 棒為陰線，且 (high-low)/low >= PUMP_THRESHOLD%
+ │ 觸發：連續創新低的陰線 run，累積跌幅 >= PUMP_THRESHOLD%，且遇到第一根不創新低的 K 棒
  ▼
 TRACKING（不限時長，持續追蹤盤整）
- │ 廢棄：4h K 棒 high > pump_candle_high → 回 IDLE（即時掃描亦會觸發）
+ │ 廢棄：4h K 棒 high > consolidation_high → 回 IDLE（即時掃描亦會觸發）
  │ 延伸：後續 4h K 棒創新低 → 更新 consolidation_low，重置盤整計時
+ │ Method B：盤整內出現新 >= PUMP_THRESHOLD% 的 sub-run，且起始 high < 現有 consolidation_high
+ │           → 完整重置為新 run（頂部下移，底部更新）
  │ 進展：停止創新低後，已盤整 >= CONSOLIDATION_MIN_HOURS(16h)
  ▼
 READY（監控進場訊號）
@@ -138,11 +163,16 @@ READY（監控進場訊號）
 
 | 欄位 | 多頭語意 | 空頭語意 |
 |------|----------|----------|
-| `pump_candle_low` | 固定失效線（跌破→IDLE） | dump candle 低點（參考） |
-| `pump_candle_high` | pump candle 高點（參考） | 固定失效線（突破→IDLE） |
-| `consolidation_low` | 固定底部（= pump_candle_low） | 動態更新（新低則更新，重置計時） |
-| `consolidation_high` | 動態更新（新高則更新，重置計時） | 固定頂部（= pump_candle_high） |
-| `consolidation_start_ts` | 最後一次創新高的 open_time | 最後一次創新低的 open_time |
+| `pump_candle_low` | run 第一根的 low（= consolidation_low = 廢棄線） | run 最低點（= consolidation_low） |
+| `pump_candle_high` | run 最高點（= consolidation_high） | run 第一根的 high（= consolidation_high = 廢棄線） |
+| `consolidation_low` | run 第一根的 low（廢棄線）；Method B 時更新 | run 最低點；延伸創新低時動態更新 |
+| `consolidation_high` | run 最高點；延伸創新高時動態更新 | run 第一根的 high（廢棄線）；Method B 時更新 |
+| `consolidation_start_ts` | 最後一次創新高的 open_time（16h 計時起點） | 最後一次創新低的 open_time（16h 計時起點） |
+| `run_start_open` | 當前 run 的第一根 open（IDLE 偵測用） | 同左 |
+| `run_start_low` | 多頭 run 廢棄線候選 | 不使用 |
+| `run_high / run_high_ts` | 多頭 run 最高點與時間 | 不使用 |
+| `run_start_high` | 不使用 | 空頭 run 廢棄線候選 |
+| `run_low / run_low_ts` | 不使用 | 空頭 run 最低點與時間 |
 
 ```python
 {
@@ -151,12 +181,20 @@ READY（監控進場訊號）
     "pump_candle_close":      None,
     "pump_candle_low":        None,
     "pump_candle_high":       None,
-    "pump_candle_time":       None,   # Unix 秒（open_time）
+    "pump_candle_time":       None,   # run peak 時間（Unix 秒）
     "consolidation_low":      None,
     "consolidation_high":     None,
     "consolidation_start_ts": None,
     "last_alert_ts":          0.0,
     "last_signal_type":       None,   # "type1" / "type2" / "type1_short"
+    # Run 追蹤（多頭用 run_high；空頭用 run_low；run_start_open 共用）
+    "run_start_open":         None,
+    "run_start_low":          None,
+    "run_high":               None,
+    "run_high_ts":            None,
+    "run_start_high":         None,
+    "run_low":                None,
+    "run_low_ts":             None,
 }
 ```
 
@@ -172,7 +210,7 @@ READY（監控進場訊號）
 
 | 參數 | 預設值 | 說明 |
 |------|--------|------|
-| `PUMP_THRESHOLD` | 8 | 4h K 棒拉漲門檻：`(high-low)/low >= N%` |
+| `PUMP_THRESHOLD` | 8 | 連續創新高/低的 run 累積漲跌幅門檻：`(run_high - run_start_open) / run_start_open >= N%` |
 | `CONSOLIDATION_MIN_HOURS` | 16 | 最低盤整時數（從最後一次創新高起算） |
 | `BREAKOUT_VOLUME_MULT` | 3 | Type 1 突破量能倍數（相對前 192 根平均） |
 | `EMA_TOUCH_THRESHOLD` | 0.5 | Type 2 EMA 觸碰容忍距離（%） |

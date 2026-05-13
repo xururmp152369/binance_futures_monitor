@@ -7,7 +7,7 @@ log = setup_logging()
 
 
 class StrategyPhase(Enum):
-    IDLE      = "idle"      # 閒置，尚未偵測到拉漲/暴跌
+    IDLE      = "idle"      # 閒置，尚未偵測到趨勢
     TRACKING  = "tracking"  # 偵測到結構，追蹤盤整中
     READY     = "ready"     # 盤整成熟，監控進場訊號
 
@@ -19,14 +19,22 @@ def _init_state() -> dict:
         "phase":                  StrategyPhase.IDLE,
         "pump_candle_open":       None,
         "pump_candle_close":      None,
-        "pump_candle_low":        None,
-        "pump_candle_high":       None,
-        "pump_candle_time":       None,  # Unix 秒（open_time）
+        "pump_candle_low":        None,   # long: 廢棄線；short: run 最低點
+        "pump_candle_high":       None,   # short: 廢棄線；long: run 最高點
+        "pump_candle_time":       None,   # run peak 時間（Unix 秒）
         "consolidation_low":      None,
         "consolidation_high":     None,
         "consolidation_start_ts": None,
         "last_alert_ts":          0.0,
-        "last_signal_type":       None,  # "type1" / "type2" / "type1_short"
+        "last_signal_type":       None,   # "type1" / "type2" / "type1_short"
+        # ── Run 追蹤（多頭：偵測連續創新高；空頭：連續創新低）──────────
+        "run_start_open":         None,   # 第一根 K 棒的 open
+        "run_start_low":          None,   # 多頭廢棄線候選（第一根的 low）
+        "run_high":               None,   # 多頭：追蹤最高點
+        "run_high_ts":            None,   # 多頭：最後創新高的時間
+        "run_start_high":         None,   # 空頭廢棄線候選（第一根的 high）
+        "run_low":                None,   # 空頭：追蹤最低點
+        "run_low_ts":             None,   # 空頭：最後創新低的時間
     }
 
 
@@ -68,22 +76,47 @@ def reset_to_idle(symbol: str, reason: str = "") -> None:
     _reset_to_idle(symbol, reason, models.strategy_state)
 
 
-# ─── K 棒判斷 ─────────────────────────────────────────────────────────────────
+# ─── 多頭 Run 套用 ────────────────────────────────────────────────────────────
 
-def _check_pump_candle(candle: tuple) -> bool:
-    """4h 陽線拉漲：close > open 且 (high-low)/low >= PUMP_THRESHOLD%。"""
-    _, open_, high, low, close = candle
-    if low <= 0:
-        return False
-    return close > open_ and (high - low) / low * 100 >= models.runtime_config["PUMP_THRESHOLD"]
+def _apply_run_long(st: dict, symbol: str, close: float, cumulative_pct: float) -> None:
+    """將已達標的多頭 run 套用到狀態（IDLE→TRACKING 或 Method B 重置）。"""
+    run_low     = st["run_start_low"]
+    run_high    = st["run_high"]
+    run_peak_ts = st["run_high_ts"]
 
-
-def _check_dump_candle(candle: tuple) -> bool:
-    """4h 陰線暴跌：close < open 且 (high-low)/low >= PUMP_THRESHOLD%（共用門檻）。"""
-    _, open_, high, low, close = candle
-    if low <= 0:
-        return False
-    return close < open_ and (high - low) / low * 100 >= models.runtime_config["PUMP_THRESHOLD"]
+    if st["phase"] == StrategyPhase.IDLE:
+        log.info(
+            f"[策略-L] {symbol} IDLE → TRACKING | "
+            f"累積漲幅={cumulative_pct:.1f}% 底={run_low:.6f} 頂={run_high:.6f}"
+        )
+        st.update({
+            "phase":                  StrategyPhase.TRACKING,
+            "pump_candle_open":       st["run_start_open"],
+            "pump_candle_close":      close,
+            "pump_candle_low":        run_low,
+            "pump_candle_high":       run_high,
+            "pump_candle_time":       run_peak_ts,
+            "consolidation_low":      run_low,
+            "consolidation_high":     run_high,
+            "consolidation_start_ts": run_peak_ts,
+        })
+    elif run_low > st["consolidation_low"]:
+        # Method B：盤整內 sub-run 達標且起始底部更高 → 完整重置為新 run
+        log.info(
+            f"[策略-L] {symbol} Method B | sub-run {cumulative_pct:.1f}% "
+            f"底 {st['consolidation_low']:.6f}→{run_low:.6f} 頂={run_high:.6f}"
+        )
+        st.update({
+            "phase":                  StrategyPhase.TRACKING,
+            "pump_candle_open":       st["run_start_open"],
+            "pump_candle_close":      close,
+            "pump_candle_low":        run_low,
+            "pump_candle_high":       run_high,
+            "pump_candle_time":       run_peak_ts,
+            "consolidation_low":      run_low,
+            "consolidation_high":     run_high,
+            "consolidation_start_ts": run_peak_ts,
+        })
 
 
 # ─── 多頭狀態機（4h） ────────────────────────────────────────────────────────
@@ -91,57 +124,117 @@ def _check_dump_candle(candle: tuple) -> bool:
 def on_new_4h_candle(symbol: str, candle: tuple) -> None:
     """處理新 4h K 棒收盤：多頭狀態機（IDLE/TRACKING/READY）。
 
+    偵測連續陽線累積漲幅達 PUMP_THRESHOLD%，進入盤整追蹤。
     candle: (open_time_ms, open, high, low, close)
     """
     st = _get_or_init(symbol, models.strategy_state)
     open_time_ms, open_, high, low, close = candle
     current_ts = open_time_ms / 1000
+    threshold  = models.runtime_config["PUMP_THRESHOLD"]
 
-    if st["phase"] != StrategyPhase.IDLE:
-        if _check_pump_candle(candle):
-            pct = (close - open_) / open_ * 100
-            st.update({
-                "pump_candle_open":       open_,
-                "pump_candle_close":      close,
-                "pump_candle_low":        low,
-                "pump_candle_high":       high,
-                "pump_candle_time":       current_ts,
-                "consolidation_low":      low,
-                "consolidation_high":     high,
-                "consolidation_start_ts": current_ts,
-                "phase":                  StrategyPhase.TRACKING,
-            })
-            log.info(f"[策略-L] {symbol} 偵測到新拉漲 K 棒 → 重置為 TRACKING | {open_:.6f}→{close:.6f} (+{pct:.1f}%)")
+    # ─── 廢棄：跌破盤整底部 ─────────────────────────
+    if st["phase"] != StrategyPhase.IDLE and st["consolidation_low"] is not None:
+        if low < st["consolidation_low"]:
+            _reset_to_idle(
+                symbol,
+                f"4h K low={low:.6f} < 底部={st['consolidation_low']:.6f}",
+                models.strategy_state,
+            )
+            return
+
+    # ─── 整體延伸：TRACKING/READY 創新高 ────────────
+    if st["phase"] != StrategyPhase.IDLE and st["consolidation_high"] is not None:
+        if high > st["consolidation_high"]:
+            prev_phase = st["phase"]
+            st["consolidation_high"]     = high
+            st["consolidation_start_ts"] = current_ts
+            st["phase"]                  = StrategyPhase.TRACKING
+            note = "（原 READY 回退）" if prev_phase == StrategyPhase.READY else ""
+            log.info(f"[策略-L] {symbol} 延伸新高 {high:.6f}{note} → 盤整計時重置")
+            # 整體延伸 → 吸收任何 sub-run，清空 run 追蹤
+            st["run_start_open"] = None
+            st["run_start_low"]  = None
+            st["run_high"]       = None
+            st["run_high_ts"]    = None
+            _maybe_transition_to_ready(st, current_ts, symbol)
+            return
+
+    # ─── Run 追蹤（IDLE：偵測趨勢；TRACKING/READY：sub-run / Method B）───
+    if st["run_high"] is not None:
+        if high > st["run_high"]:
+            # 創新高 → 延伸 run
+            st["run_high"]    = high
+            st["run_high_ts"] = current_ts
         else:
-            if low < st["pump_candle_low"]:
-                _reset_to_idle(symbol, f"4h K low={low:.6f} < 拉漲 K 低點={st['pump_candle_low']:.6f}", models.strategy_state)
-                return
+            # 未創新高 → run 停止，檢查是否達到門檻
+            cumulative_pct = (st["run_high"] - st["run_start_open"]) / st["run_start_open"] * 100
+            if cumulative_pct >= threshold:
+                _apply_run_long(st, symbol, close, cumulative_pct)
 
-            if high > st["consolidation_high"]:
-                prev_phase = st["phase"]
-                st["consolidation_high"]     = high
-                st["consolidation_start_ts"] = current_ts
-                st["phase"]                  = StrategyPhase.TRACKING
-                note = "（原 READY 回退）" if prev_phase == StrategyPhase.READY else ""
-                log.info(f"[策略-L] {symbol} 延伸新高 {high:.6f}{note} → 盤整計時重置")
+            # 重置 run
+            st["run_start_open"] = None
+            st["run_start_low"]  = None
+            st["run_high"]       = None
+            st["run_high_ts"]    = None
 
-        _maybe_transition_to_ready(st, current_ts, symbol)
-        return
+            # 本根若為陽線，立刻開始新的 run
+            if close > open_:
+                st["run_start_open"] = open_
+                st["run_start_low"]  = low
+                st["run_high"]       = high
+                st["run_high_ts"]    = current_ts
+    else:
+        # 尚無進行中的 run → 陽線啟動
+        if close > open_:
+            st["run_start_open"] = open_
+            st["run_start_low"]  = low
+            st["run_high"]       = high
+            st["run_high_ts"]    = current_ts
 
-    if _check_pump_candle(candle):
-        pct = (close - open_) / open_ * 100
+    _maybe_transition_to_ready(st, current_ts, symbol)
+
+
+# ─── 空頭 Run 套用 ────────────────────────────────────────────────────────────
+
+def _apply_run_short(st: dict, symbol: str, close: float, cumulative_pct: float) -> None:
+    """將已達標的空頭 run 套用到狀態（IDLE→TRACKING 或 Method B 重置）。"""
+    run_high    = st["run_start_high"]
+    run_low     = st["run_low"]
+    run_peak_ts = st["run_low_ts"]
+
+    if st["phase"] == StrategyPhase.IDLE:
+        log.info(
+            f"[策略-S] {symbol} IDLE → TRACKING | "
+            f"累積跌幅={cumulative_pct:.1f}% 頂={run_high:.6f} 底={run_low:.6f}"
+        )
         st.update({
             "phase":                  StrategyPhase.TRACKING,
-            "pump_candle_open":       open_,
+            "pump_candle_open":       st["run_start_open"],
             "pump_candle_close":      close,
-            "pump_candle_low":        low,
-            "pump_candle_high":       high,
-            "pump_candle_time":       current_ts,
-            "consolidation_low":      low,
-            "consolidation_high":     high,
-            "consolidation_start_ts": current_ts,
+            "pump_candle_high":       run_high,
+            "pump_candle_low":        run_low,
+            "pump_candle_time":       run_peak_ts,
+            "consolidation_high":     run_high,
+            "consolidation_low":      run_low,
+            "consolidation_start_ts": run_peak_ts,
         })
-        log.info(f"[策略-L] {symbol} IDLE → TRACKING | 4h 拉漲 {open_:.6f}→{close:.6f} (+{pct:.1f}%)")
+    elif run_high < st["consolidation_high"]:
+        # Method B：盤整內 sub-run 達標且起始頂部更低 → 完整重置為新 run
+        log.info(
+            f"[策略-S] {symbol} Method B | sub-run {cumulative_pct:.1f}% "
+            f"頂 {st['consolidation_high']:.6f}→{run_high:.6f} 底={run_low:.6f}"
+        )
+        st.update({
+            "phase":                  StrategyPhase.TRACKING,
+            "pump_candle_open":       st["run_start_open"],
+            "pump_candle_close":      close,
+            "pump_candle_high":       run_high,
+            "pump_candle_low":        run_low,
+            "pump_candle_time":       run_peak_ts,
+            "consolidation_high":     run_high,
+            "consolidation_low":      run_low,
+            "consolidation_start_ts": run_peak_ts,
+        })
 
 
 # ─── 空頭狀態機（4h） ────────────────────────────────────────────────────────
@@ -149,62 +242,75 @@ def on_new_4h_candle(symbol: str, candle: tuple) -> None:
 def on_new_4h_candle_short(symbol: str, candle: tuple) -> None:
     """處理新 4h K 棒收盤：空頭狀態機（IDLE/TRACKING/READY）。
 
-    邏輯與多頭完全對稱：
-    - 觸發條件：陰線暴跌 >= PUMP_THRESHOLD%
-    - 延伸：創新低 → 更新 consolidation_low，重置計時
-    - 廢棄：high > pump_candle_high
-
+    偵測連續陰線累積跌幅達 PUMP_THRESHOLD%，進入盤整追蹤。
+    與多頭完全對稱：創新低延伸；突破頂部廢棄。
     candle: (open_time_ms, open, high, low, close)
     """
     st = _get_or_init(symbol, models.strategy_state_short)
     open_time_ms, open_, high, low, close = candle
     current_ts = open_time_ms / 1000
+    threshold  = models.runtime_config["PUMP_THRESHOLD"]
 
-    if st["phase"] != StrategyPhase.IDLE:
-        if _check_dump_candle(candle):
-            pct = (open_ - close) / open_ * 100
-            st.update({
-                "pump_candle_open":       open_,
-                "pump_candle_close":      close,
-                "pump_candle_low":        low,
-                "pump_candle_high":       high,
-                "pump_candle_time":       current_ts,
-                "consolidation_low":      low,
-                "consolidation_high":     high,
-                "consolidation_start_ts": current_ts,
-                "phase":                  StrategyPhase.TRACKING,
-            })
-            log.info(f"[策略-S] {symbol} 偵測到新暴跌 K 棒 → 重置為 TRACKING | {open_:.6f}→{close:.6f} (-{pct:.1f}%)")
+    # ─── 廢棄：突破盤整頂部 ─────────────────────────
+    if st["phase"] != StrategyPhase.IDLE and st["consolidation_high"] is not None:
+        if high > st["consolidation_high"]:
+            _reset_to_idle(
+                symbol,
+                f"4h K high={high:.6f} > 頂部={st['consolidation_high']:.6f}",
+                models.strategy_state_short,
+            )
+            return
+
+    # ─── 整體延伸：TRACKING/READY 創新低 ────────────
+    if st["phase"] != StrategyPhase.IDLE and st["consolidation_low"] is not None:
+        if low < st["consolidation_low"]:
+            prev_phase = st["phase"]
+            st["consolidation_low"]      = low
+            st["consolidation_start_ts"] = current_ts
+            st["phase"]                  = StrategyPhase.TRACKING
+            note = "（原 READY 回退）" if prev_phase == StrategyPhase.READY else ""
+            log.info(f"[策略-S] {symbol} 延伸新低 {low:.6f}{note} → 盤整計時重置")
+            # 整體延伸 → 吸收任何 sub-run
+            st["run_start_open"] = None
+            st["run_start_high"] = None
+            st["run_low"]        = None
+            st["run_low_ts"]     = None
+            _maybe_transition_to_ready(st, current_ts, symbol)
+            return
+
+    # ─── Run 追蹤（IDLE：偵測趨勢；TRACKING/READY：sub-run / Method B）───
+    if st["run_low"] is not None:
+        if low < st["run_low"]:
+            # 創新低 → 延伸 run
+            st["run_low"]    = low
+            st["run_low_ts"] = current_ts
         else:
-            if high > st["pump_candle_high"]:
-                _reset_to_idle(symbol, f"4h K high={high:.6f} > 暴跌 K 高點={st['pump_candle_high']:.6f}", models.strategy_state_short)
-                return
+            # 未創新低 → run 停止，檢查是否達到門檻
+            cumulative_pct = (st["run_start_open"] - st["run_low"]) / st["run_start_open"] * 100
+            if cumulative_pct >= threshold:
+                _apply_run_short(st, symbol, close, cumulative_pct)
 
-            if low < st["consolidation_low"]:
-                prev_phase = st["phase"]
-                st["consolidation_low"]      = low
-                st["consolidation_start_ts"] = current_ts
-                st["phase"]                  = StrategyPhase.TRACKING
-                note = "（原 READY 回退）" if prev_phase == StrategyPhase.READY else ""
-                log.info(f"[策略-S] {symbol} 延伸新低 {low:.6f}{note} → 盤整計時重置")
+            # 重置 run
+            st["run_start_open"] = None
+            st["run_start_high"] = None
+            st["run_low"]        = None
+            st["run_low_ts"]     = None
 
-        _maybe_transition_to_ready(st, current_ts, symbol)
-        return
+            # 本根若為陰線，立刻開始新的 run
+            if close < open_:
+                st["run_start_open"] = open_
+                st["run_start_high"] = high
+                st["run_low"]        = low
+                st["run_low_ts"]     = current_ts
+    else:
+        # 尚無進行中的 run → 陰線啟動
+        if close < open_:
+            st["run_start_open"] = open_
+            st["run_start_high"] = high
+            st["run_low"]        = low
+            st["run_low_ts"]     = current_ts
 
-    if _check_dump_candle(candle):
-        pct = (open_ - close) / open_ * 100
-        st.update({
-            "phase":                  StrategyPhase.TRACKING,
-            "pump_candle_open":       open_,
-            "pump_candle_close":      close,
-            "pump_candle_low":        low,
-            "pump_candle_high":       high,
-            "pump_candle_time":       current_ts,
-            "consolidation_low":      low,
-            "consolidation_high":     high,
-            "consolidation_start_ts": current_ts,
-        })
-        log.info(f"[策略-S] {symbol} IDLE → TRACKING | 4h 暴跌 {open_:.6f}→{close:.6f} (-{pct:.1f}%)")
+    _maybe_transition_to_ready(st, current_ts, symbol)
 
 
 # ─── 多頭訊號（15m） ─────────────────────────────────────────────────────────
@@ -323,7 +429,6 @@ def on_new_15m_candle_short(symbol: str, candle: tuple) -> dict | None:
     current_4h_open_ms = (open_time_ms // _4H_MS) * _4H_MS
     lookback_threshold = avg_vol * models.runtime_config["LOOKBACK_VOLUME_MULT"]
 
-    # 止損：往回掃連續放量 K，取最高 high（與做多取最低 low 對稱）
     stop_loss = high
     for i in range(len(ohlc_list) - 2, -1, -1):
         prev = ohlc_list[i]
@@ -367,8 +472,8 @@ def on_new_1h_candle(symbol: str, candle: tuple) -> dict | None:
 
     open_time_ms, open_, _high, low, close = candle
 
-    if low < st["pump_candle_low"]:
-        _reset_to_idle(symbol, f"1h K low={low:.6f} < 拉漲 K 低點={st['pump_candle_low']:.6f}", models.strategy_state)
+    if low < st["consolidation_low"]:
+        _reset_to_idle(symbol, f"1h K low={low:.6f} < 底部={st['consolidation_low']:.6f}", models.strategy_state)
         return None
 
     ema_4h = models.symbol_state.get(symbol, {}).get("ema_4h", {})
@@ -393,7 +498,7 @@ def on_new_1h_candle(symbol: str, candle: tuple) -> dict | None:
         return None
 
     top       = st["consolidation_high"]
-    stop_loss = st["pump_candle_low"]
+    stop_loss = st["consolidation_low"]
     if close <= stop_loss:
         return None
 
@@ -448,18 +553,26 @@ def check_invalidation_realtime(symbol: str) -> bool:
 
     invalidated = False
 
-    # 多頭：markPrice 跌破拉漲 K 低點
+    # 多頭：markPrice 跌破盤整底部
     st_long = models.strategy_state.get(symbol)
     if st_long and st_long["phase"] != StrategyPhase.IDLE:
-        if price < st_long["pump_candle_low"]:
-            _reset_to_idle(symbol, f"即時價格 {price:.6f} < 拉漲 K 低點 {st_long['pump_candle_low']:.6f}", models.strategy_state)
+        if price < st_long["consolidation_low"]:
+            _reset_to_idle(
+                symbol,
+                f"即時價格 {price:.6f} < 底部 {st_long['consolidation_low']:.6f}",
+                models.strategy_state,
+            )
             invalidated = True
 
-    # 空頭：markPrice 突破暴跌 K 高點
+    # 空頭：markPrice 突破盤整頂部
     st_short = models.strategy_state_short.get(symbol)
     if st_short and st_short["phase"] != StrategyPhase.IDLE:
-        if price > st_short["pump_candle_high"]:
-            _reset_to_idle(symbol, f"即時價格 {price:.6f} > 暴跌 K 高點 {st_short['pump_candle_high']:.6f}", models.strategy_state_short)
+        if price > st_short["consolidation_high"]:
+            _reset_to_idle(
+                symbol,
+                f"即時價格 {price:.6f} > 頂部 {st_short['consolidation_high']:.6f}",
+                models.strategy_state_short,
+            )
             invalidated = True
 
     return invalidated
