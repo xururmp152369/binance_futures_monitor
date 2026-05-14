@@ -3,8 +3,9 @@
 ## 目前進行中
 
 - `feature/type1-short` 分支：Type 1 Short 已完成並測試通過，待確認後 merge main
-- 下一步：（待指定）
-
+- 下一步：
+    1. 調整使用者設定內容，config內的持倉上限(ORDER_LIMIT)調整成另外兩個欄位 ==> 多單持倉上限(LONG_ORDER_LIMIT)、空單持倉上限(SHORT_ORDER_LIMIT)，原本的持倉上限則廢棄
+    2. 設定的部分活性化，可以用傳入JSON範本的方式，也可以透過指定欄位去變更，指令則運用 ==> /myconfig ORDER_LIMIT #VALUE，如果欄位無法識別則不動作並告警操作錯誤，如果只送/myconfig，保持原樣
 ---
 
 ## 專案概覽

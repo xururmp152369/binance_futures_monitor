@@ -1,6 +1,7 @@
 """Type 1 Short 空頭狀態機測試（與多頭邏輯完全對稱）"""
 
 import pytest
+from collections import deque
 from app.setting import models
 from app.strategy.state_machine import (
     StrategyPhase,
@@ -336,3 +337,70 @@ class TestType1ShortSignal:
         ts_candle = TS0 + 14 * 3600 * 1000
         candle = (ts_candle, bottom, bottom * 1.005, bottom * 0.985, bottom * 0.99, 400.0)
         assert on_new_15m_candle_short(SYM, candle) is None
+
+    @staticmethod
+    def _make_tail_deque(*tail, total=200, base_volume=100.0):
+        """Build a `total`-element 15m deque.
+
+        tail: sequence of (vol, low, high); appended at indices [-len-1 … -2].
+        Index -1 is always base (skipped by the scan loop).
+        """
+        d = deque(maxlen=total)
+        base_ts = 1_700_000_000_000
+        n_base = total - len(tail) - 1
+        for i in range(n_base):
+            d.append((base_ts + i * 900_000, 100.0, 101.0, 99.0, 100.5, base_volume))
+        for j, (vol, low, high) in enumerate(tail):
+            d.append((base_ts + (n_base + j) * 900_000, 100.0, high, low, 100.5, vol))
+        d.append((base_ts + (total - 1) * 900_000, 100.0, 101.0, 99.0, 100.5, base_volume))
+        return d
+
+    def test_stop_loss_no_prior_high_volume(self):
+        """前方無放量根 → stop_loss 等於突破根自身的最高 high。"""
+        self._setup_ready()
+        bottom = _st()["consolidation_low"]
+        setup_symbol_state(SYM, kline_15m_ohlc=make_15m_ohlc_deque(count=200, base_volume=100.0))
+        breakout_high = bottom * 1.010
+        ts_candle     = TS0 + 14 * 3600 * 1000
+        candle = (ts_candle, bottom, breakout_high, bottom * 0.985, bottom * 0.990, 400.0)
+        result = on_new_15m_candle_short(SYM, candle)
+        assert result is not None
+        assert result["stop_loss"] == pytest.approx(breakout_high, rel=1e-6)
+
+    def test_stop_loss_extends_through_consecutive_high_volume_candles(self):
+        """往回掃連續放量根 → stop_loss 取到最高 high。"""
+        self._setup_ready()
+        bottom = _st()["consolidation_low"]
+        # ohlc_list[-4]: vol=100 → chain break（不掃）
+        # ohlc_list[-3]: vol=500, high=bottom*1.022 → 被掃，stop_loss 升至最高
+        # ohlc_list[-2]: vol=500, high=bottom*1.015 → 首先被掃
+        d = self._make_tail_deque(
+            (100.0, 99.0, 101.0),
+            (500.0, 99.0, bottom * 1.022),
+            (500.0, 99.0, bottom * 1.015),
+        )
+        setup_symbol_state(SYM, kline_15m_ohlc=d)
+        ts_candle = TS0 + 14 * 3600 * 1000
+        candle = (ts_candle, bottom, bottom * 1.005, bottom * 0.985, bottom * 0.990, 500.0)
+        result = on_new_15m_candle_short(SYM, candle)
+        assert result is not None
+        assert result["stop_loss"] == pytest.approx(bottom * 1.022, rel=1e-6)
+
+    def test_stop_loss_chain_breaks_at_low_volume_candle(self):
+        """連續放量鏈中間遇低量根 → 回掃停止，不延伸到更前方的根。"""
+        self._setup_ready()
+        bottom = _st()["consolidation_low"]
+        # ohlc_list[-4]: vol=500, high=bottom*1.030 → 未被掃（鏈已斷）
+        # ohlc_list[-3]: vol=100, high=bottom*1.025 → 鏈斷點
+        # ohlc_list[-2]: vol=500, high=bottom*1.015 → 首先被掃
+        d = self._make_tail_deque(
+            (500.0, 99.0, bottom * 1.030),
+            (100.0, 99.0, bottom * 1.025),
+            (500.0, 99.0, bottom * 1.015),
+        )
+        setup_symbol_state(SYM, kline_15m_ohlc=d)
+        ts_candle = TS0 + 14 * 3600 * 1000
+        candle = (ts_candle, bottom, bottom * 1.005, bottom * 0.985, bottom * 0.990, 500.0)
+        result = on_new_15m_candle_short(SYM, candle)
+        assert result is not None
+        assert result["stop_loss"] == pytest.approx(bottom * 1.015, rel=1e-6)

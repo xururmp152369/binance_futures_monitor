@@ -108,10 +108,52 @@ async def setup(update: Update, _context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(CONFIG_TEMPLATE_TEXT, parse_mode="Markdown")
 
 
-async def my_config(update: Update, _context: ContextTypes.DEFAULT_TYPE):
-    """/myconfig — 顯示目前個人設定摘要（需登入）"""
+async def my_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/myconfig — 顯示設定摘要；/myconfig FIELD VALUE 更新單一欄位（需登入）"""
     account_name, acc = await _require_login(update)
     if not account_name:
+        return
+
+    # 單欄位更新模式
+    if context.args:
+        if len(context.args) < 2:
+            await update.message.reply_text(
+                "❌ 格式錯誤，請使用：`/myconfig 欄位名稱 值`\n例如：`/myconfig LONG_ORDER_LIMIT 5`",
+                parse_mode="Markdown",
+            )
+            return
+        field = context.args[0].upper()
+        if field not in _ALL_CONFIG_KEYS:
+            await update.message.reply_text(
+                f"❌ 無法識別的欄位：`{field}`\n請輸入 /myconfig 查看可設定的欄位。",
+                parse_mode="Markdown",
+            )
+            return
+        value_str = " ".join(context.args[1:])
+        try:
+            value = json.loads(value_str)
+        except (json.JSONDecodeError, ValueError):
+            value = value_str
+        existing = get_user_config(account_name)
+        if existing is None:
+            await update.message.reply_text(
+                "❌ 尚無設定檔，請先用 /setup 取得範本並完整填寫後傳送。"
+            )
+            return
+        updated = {**existing, field: value}
+        ok, errors = validate_config(updated)
+        if not ok:
+            error_lines = "\n".join(f"• {e}" for e in errors)
+            await update.message.reply_text(
+                f"❌ 值不合法：\n\n{error_lines}",
+                parse_mode="Markdown",
+            )
+            return
+        save_user_config(account_name, updated)
+        await update.message.reply_text(
+            f"✅ `{field}` 已更新為 `{value}`\n\n輸入 /myconfig 查看完整設定。",
+            parse_mode="Markdown",
+        )
         return
 
     cfg = get_user_config(account_name)
@@ -160,7 +202,8 @@ async def my_config(update: Update, _context: ContextTypes.DEFAULT_TYPE):
         f"保證金模式：`{margin_type}`\n\n"
         f"{tp_long_str}\n\n"
         f"{tp_short_str}\n\n"
-        f"部位上限：`{cfg.get('ORDER_LIMIT')} 筆`\n"
+        f"多單上限：`{cfg.get('LONG_ORDER_LIMIT')} 筆`\n"
+        f"空單上限：`{cfg.get('SHORT_ORDER_LIMIT')} 筆`\n"
         f"同幣種加倉：`{'是' if cfg.get('ADD_SAME_SYMBOL') else '否'}`\n"
         f"黑名單：{'、'.join(blacklist) if blacklist else '（無）'}\n"
         f"自動開單：`{'開啟' if cfg.get('ENABLED') else '關閉'}`"
@@ -171,8 +214,8 @@ async def my_config(update: Update, _context: ContextTypes.DEFAULT_TYPE):
 _ALL_CONFIG_KEYS = {
     "API_KEY", "SECRET_KEY", "PRD_API_KEY", "PRD_SECRET_KEY", "ORDER_MODE",
     "STRATEGY", "RISK_TYPE", "RISK_AMOUNT", "RISK_LEVERAGE", "MARGIN_TYPE",
-    "TP_STRATEGY", "TP_STRATEGY_SHORT", "ORDER_LIMIT", "ADD_SAME_SYMBOL",
-    "SYMBOL_BLACKLIST", "ENABLED",
+    "TP_STRATEGY", "TP_STRATEGY_SHORT", "LONG_ORDER_LIMIT", "SHORT_ORDER_LIMIT",
+    "ADD_SAME_SYMBOL", "SYMBOL_BLACKLIST", "ENABLED",
 }
 
 
@@ -250,7 +293,8 @@ async def handle_json_message(update: Update, _context: ContextTypes.DEFAULT_TYP
         f"保證金模式：`{margin_type}`\n\n"
         f"{tp_long_str}\n\n"
         f"{tp_short_str}\n\n"
-        f"部位上限：`{data.get('ORDER_LIMIT')} 筆`\n"
+        f"多單上限：`{data.get('LONG_ORDER_LIMIT')} 筆`\n"
+        f"空單上限：`{data.get('SHORT_ORDER_LIMIT')} 筆`\n"
         f"自動開單：`{'開啟' if data.get('ENABLED') else '關閉'}`",
         parse_mode="Markdown",
     )
@@ -269,7 +313,8 @@ async def command(update: Update, _context: ContextTypes.DEFAULT_TYPE):
         "/logout — 登出\n\n"
         "⚙️ 個人設定（需登入）：\n"
         "/setup — 取得自動開單設定範本\n"
-        "/myconfig — 查看目前個人設定\n\n"
+        "/myconfig — 查看目前個人設定\n"
+        "/myconfig 欄位 值 — 更新單一欄位，例：/myconfig LONG_ORDER_LIMIT 5\n\n"
         "📊 行情查詢：\n"
         "/strategy <coin> — 查看策略狀態，ex: btc\n"
     )

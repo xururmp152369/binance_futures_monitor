@@ -83,12 +83,22 @@ async def _place_orders_for_user(
         )
         log.info(f"[自動開單] {symbol} 模式={'正式' if use_prd else '模擬'} ({account_name})")
 
-        # 部位上限 & 加倉檢查
+        # 部位上限 & 加倉檢查（多空分開計算）
         open_positions = await _get_open_positions(client)
         open_symbols   = {p["symbol"] for p in open_positions}
 
-        if len(open_positions) >= cfg["ORDER_LIMIT"]:
-            msg = f"部位已達上限（{len(open_positions)}/{cfg['ORDER_LIMIT']}），略過 {symbol}"
+        is_short = signal_type in ("TYPE1_SHORT",)
+        if is_short:
+            side_positions = [p for p in open_positions if float(p.get("positionAmt", 0)) < 0]
+            order_limit    = cfg["SHORT_ORDER_LIMIT"]
+            side_label     = "空單"
+        else:
+            side_positions = [p for p in open_positions if float(p.get("positionAmt", 0)) > 0]
+            order_limit    = cfg["LONG_ORDER_LIMIT"]
+            side_label     = "多單"
+
+        if len(side_positions) >= order_limit:
+            msg = f"{side_label}部位已達上限（{len(side_positions)}/{order_limit}），略過 {symbol}"
             log.info(f"[自動開單] {msg} ({account_name})")
             return (False, msg)
 

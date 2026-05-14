@@ -162,9 +162,16 @@ def get_user_config(account_name: str) -> dict | None:
     if not p.exists():
         return None
     try:
-        return json.loads(_get_fernet().decrypt(p.read_bytes()).decode("utf-8"))
+        cfg = json.loads(_get_fernet().decrypt(p.read_bytes()).decode("utf-8"))
     except Exception:
         return None
+    # 舊設定 ORDER_LIMIT → LONG/SHORT_ORDER_LIMIT 自動 migration
+    if "ORDER_LIMIT" in cfg and "LONG_ORDER_LIMIT" not in cfg:
+        old_limit = cfg.pop("ORDER_LIMIT")
+        cfg["LONG_ORDER_LIMIT"]  = old_limit
+        cfg["SHORT_ORDER_LIMIT"] = old_limit
+        save_user_config(account_name, cfg)
+    return cfg
 
 
 def save_user_config(account_name: str, config: dict) -> None:
@@ -286,7 +293,8 @@ CONFIG_TEMPLATE_TEXT = """\
   ‣ `PERCENT`：達到該盈虧比時平倉的部位比例 (%)，最後一組會自動全數平倉
 • `TP_STRATEGY_SHORT`：空頭止盈策略（選填），格式同上。不填則沿用 `TP_STRATEGY`
   ‣ 下跌行情達到止盈較難，建議設比多頭更保守的盈虧比（如 1R 而非 1.5R）
-• `ORDER_LIMIT`：同時持有部位數上限
+• `LONG_ORDER_LIMIT`：同時持有多單部位數上限
+• `SHORT_ORDER_LIMIT`：同時持有空單部位數上限
 • `ADD_SAME_SYMBOL`：同幣種已有倉位時，是否再次開單（加倉）
 • `SYMBOL_BLACKLIST`：不自動開單的幣種清單，空陣列表示不限制
 • `ENABLED`：是否啟用自動開單
@@ -309,7 +317,8 @@ CONFIG_TEMPLATE_TEXT = """\
     "TP_STRATEGY_SHORT": [
         { "RR_RATIO": 1.0, "PERCENT": 50 }
     ],
-    "ORDER_LIMIT": 10,
+    "LONG_ORDER_LIMIT": 10,
+    "SHORT_ORDER_LIMIT": 10,
     "ADD_SAME_SYMBOL": false,
     "SYMBOL_BLACKLIST": [],
     "ENABLED": true
@@ -383,9 +392,13 @@ def validate_config(data: dict) -> tuple[bool, list[str]]:
 
     _validate_tp("TP_STRATEGY_SHORT")
 
-    order_limit = data.get("ORDER_LIMIT")
-    if not isinstance(order_limit, int) or order_limit <= 0:
-        errors.append("`ORDER_LIMIT` 必須為正整數")
+    long_order_limit = data.get("LONG_ORDER_LIMIT")
+    if not isinstance(long_order_limit, int) or long_order_limit <= 0:
+        errors.append("`LONG_ORDER_LIMIT` 必須為正整數")
+
+    short_order_limit = data.get("SHORT_ORDER_LIMIT")
+    if not isinstance(short_order_limit, int) or short_order_limit <= 0:
+        errors.append("`SHORT_ORDER_LIMIT` 必須為正整數")
 
     if not isinstance(data.get("ADD_SAME_SYMBOL"), bool):
         errors.append("`ADD_SAME_SYMBOL` 必須為 true 或 false")
