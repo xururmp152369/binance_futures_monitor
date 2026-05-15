@@ -2,10 +2,8 @@
 
 ## 目前進行中
 
-- `feature/type1-short` 分支：Type 1 Short 已完成並測試通過，待確認後 merge main
-- 下一步：
-    1. 調整使用者設定內容，config內的持倉上限(ORDER_LIMIT)調整成另外兩個欄位 ==> 多單持倉上限(LONG_ORDER_LIMIT)、空單持倉上限(SHORT_ORDER_LIMIT)，原本的持倉上限則廢棄
-    2. 設定的部分活性化，可以用傳入JSON範本的方式，也可以透過指定欄位去變更，指令則運用 ==> /myconfig ORDER_LIMIT #VALUE，如果欄位無法識別則不動作並告警操作錯誤，如果只送/myconfig，保持原樣
+- ✅ **Run 期間帶量驗證（方案 A）**：4h run 進入 TRACKING 需同時通過三重條件（累積漲跌幅、根數上限、均量門檻），多空對稱。
+
 ---
 
 ## 專案概覽
@@ -55,31 +53,35 @@ Binance WebSocket (markPrice + kline_15m/1h/4h)
 ### 觸發偵測（Run 追蹤）
 
 **多頭 Run**
-1. 陽線（close > open）啟動 run，記錄第一根 open / low / high
+1. 陽線（close > open）啟動 run，記錄第一根 open / low / high；同時從 `kline_4h_ohlc` 取前 `RUN_VOLUME_BASELINE_N` 根計算基準均量 `run_volume_baseline`，初始化 `run_candle_count=1`、`run_volume_sum=quote_volume`
 2. 後續每根 4h K：
-   - `high > run_high` → 延伸 run（更新 run_high）
-   - `high ≤ run_high` → run 停止，計算累積漲幅 = `(run_high - run_start_open) / run_start_open`
-     - ≥ PUMP_THRESHOLD% → 進入 TRACKING；< 門檻 → 重置 run
+   - `high > run_high` → 延伸 run（更新 run_high），`run_candle_count += 1`，`run_volume_sum += quote_volume`
+   - `high ≤ run_high` → run 停止，**三重評估**（多空相同）：
+     1. 累積漲幅 = `(run_high - run_start_open) / run_start_open × 100` ≥ `PUMP_THRESHOLD`%
+     2. `run_candle_count` ≤ `RUN_MAX_CANDLES`（超過視為緩漲）
+     3. `run_volume_sum / run_candle_count` ≥ `run_volume_baseline × RUN_VOLUME_MULT`（baseline 不足時跳過此條件）
+     - 三者全部通過 → 進入 TRACKING；任一不通過 → 重置 run
 3. `consolidation_low` = run 第一根的 low（廢棄線）
 4. `consolidation_high` = run 期間最高 high
 5. `consolidation_start_ts` = 最後一次創新高的時間（16h 計時起點）
 
 **空頭 Run（完全對稱）**
-1. 陰線啟動 run；`low < run_low` 延伸；`low ≥ run_low` 停止，檢查累積跌幅
-2. `consolidation_high` = run 第一根的 high（廢棄線）
-3. `consolidation_low` = run 期間最低 low
+1. 陰線啟動 run；同步初始化 `run_volume_baseline`、`run_candle_count`、`run_volume_sum`
+2. `low < run_low` → 延伸並累積量能；`low ≥ run_low` → 停止，走同一套三重評估（跌幅、根數、均量）
+3. `consolidation_high` = run 第一根的 high（廢棄線）
+4. `consolidation_low` = run 期間最低 low
 
 ### 狀態轉換
 
 **多頭（strategy_state）**
 ```
 IDLE
- │ 觸發：累積漲幅 >= PUMP_THRESHOLD%，遇第一根不創新高的 K 棒
+ │ 觸發：run 三重評估通過（漲幅/根數/均量），遇第一根不創新高的 K 棒
  ▼
 TRACKING
  │ 廢棄：4h K low < consolidation_low → IDLE（即時掃描亦觸發）
- │ 延伸：4h K 創新高 → 更新 consolidation_high，重置 16h 計時
- │ Method B：盤整內新 sub-run 達標且起始 low > consolidation_low → 完整重置（底部上移）
+ │ 延伸：4h K 創新高 → 更新 consolidation_high，重置 16h 計時，清空 run 量能欄位
+ │ Method B：盤整內新 sub-run 三重評估通過，且起始 low > consolidation_low → 完整重置（底部上移）
  │ 進展：停止創新高後盤整 >= CONSOLIDATION_MIN_HOURS
  ▼
 READY
@@ -91,12 +93,12 @@ READY
 **空頭（strategy_state_short）**
 ```
 IDLE
- │ 觸發：累積跌幅 >= PUMP_THRESHOLD%，遇第一根不創新低的 K 棒
+ │ 觸發：run 三重評估通過（跌幅/根數/均量），遇第一根不創新低的 K 棒
  ▼
 TRACKING
  │ 廢棄：4h K high > consolidation_high → IDLE
- │ 延伸：4h K 創新低 → 更新 consolidation_low，重置計時
- │ Method B：新 sub-run 達標且起始 high < consolidation_high → 完整重置（頂部下移）
+ │ 延伸：4h K 創新低 → 更新 consolidation_low，重置計時，清空 run 量能欄位
+ │ Method B：新 sub-run 三重評估通過，且起始 high < consolidation_high → 完整重置（頂部下移）
  │ 進展：停止創新低後盤整 >= CONSOLIDATION_MIN_HOURS
  ▼
 READY
@@ -131,10 +133,14 @@ READY
 | `run_start_open` | run 第一根 open | 同左 |
 | `run_start_low` / `run_high` / `run_high_ts` | 多頭 run 追蹤 | 不使用 |
 | `run_start_high` / `run_low` / `run_low_ts` | 不使用 | 空頭 run 追蹤 |
+| `run_candle_count` | run 期間已累積根數（三重評估條件②） | 同左 |
+| `run_volume_sum` | run 期間 quote_volume 累積總量 | 同左 |
+| `run_volume_baseline` | run 啟動時快照的前 N 根基準均量（三重評估條件③） | 同左 |
 
 ### Candle Tuple 格式
 
-- 4h / 1h：`(open_time_ms, open, high, low, close)`
+- 4h：`(open_time_ms, open, high, low, close, quote_volume)`
+- 1h：`(open_time_ms, open, high, low, close)`
 - 15m：`(open_time_ms, open, high, low, close, quote_volume)`
 - 時間欄位必須用 `k["t"]`（open_time_ms），不得用 `k["T"]`（close_time_ms）
 
@@ -151,6 +157,9 @@ READY
 | `WICK_THRESHOLD` | 3 | Type 2 有效收針（%） |
 | `STRATEGY_RR_MIN` | 1.0 | Type 2 最低盈虧比 |
 | `STRATEGY_COOLDOWN` | 14400 | 告警冷卻秒數（4h） |
+| `RUN_MAX_CANDLES` | 6 | Run 最多允許根數（超過視為緩漲/跌，= 1 天） |
+| `RUN_VOLUME_MULT` | 1.5 | Run 均量門檻倍數（相對前 N 根基準均量） |
+| `RUN_VOLUME_BASELINE_N` | 20 | Run 量能基準參考根數（前 N 根 4h K 棒） |
 
 **user_config 新增欄位**
 - `TP_STRATEGY_SHORT`：空頭止盈策略（選填，fallback 到 `TP_STRATEGY`）

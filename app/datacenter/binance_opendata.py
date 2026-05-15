@@ -74,7 +74,7 @@ async def load_historical_klines_ohlc(client, symbol: str, interval: str, limit:
     15m   → [(open_time_ms, open, high, low, close, quote_volume), ...]
     """
     klines = await _fetch_klines(client, symbol, interval, limit)
-    if interval == "15m":
+    if interval in ("15m", "4h"):
         return [(int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[7])) for k in klines]
     return [(int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4])) for k in klines]
 
@@ -273,7 +273,7 @@ def _handle_kline_4h(data: dict) -> None:
     close_price = float(k["c"])
     state       = symbol_state[sym]
     _update_kline_ema(state, "kline_4h_closes", "ema_4h", close_price)
-    candle = (int(k["t"]), float(k["o"]), float(k["h"]), float(k["l"]), close_price)
+    candle = (int(k["t"]), float(k["o"]), float(k["h"]), float(k["l"]), close_price, float(k["q"]))
     state["kline_4h_ohlc"].append(candle)
     on_new_4h_candle(sym, candle)
     on_new_4h_candle_short(sym, candle)

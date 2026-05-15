@@ -24,8 +24,11 @@ BATCH_SIZE = 20 # WebSocket 批次數量
 PUMP_THRESHOLD          = 8      # 4h K 棒漲幅門檻（%），單根 (close-open)/open >= N%
 CONSOLIDATION_MIN_HOURS = 16     # 最低盤整時數，滿足後進入 READY 狀態
 BREAKOUT_VOLUME_MULT    = 4.5    # Type1 突破量能倍數（相對 48h 平均）
-LOOKBACK_VOLUME_MULT    = 3    # Type1 回推放量序列門檻（低於此門檻即停止往回）
-EMA_TOUCH_THRESHOLD     = 0.5   # Type2 EMA 觸碰容忍距離（%），low <= EMA × (1 + N%)
+LOOKBACK_VOLUME_MULT    = 3      # Type1 回推放量序列門檻（低於此門檻即停止往回）
+EMA_TOUCH_THRESHOLD     = 0.5    # Type2 EMA 觸碰容忍距離（%），low <= EMA × (1 + N%)
 WICK_THRESHOLD          = 3      # Type2 有效收針：close > low × (1 + N%)
-STRATEGY_RR_MIN         = 1.0   # Type2 最低盈虧比
+STRATEGY_RR_MIN         = 1.0    # Type2 最低盈虧比
 STRATEGY_COOLDOWN       = 14400  # 策略告警冷卻秒數（4 小時）
+RUN_MAX_CANDLES         = 6      # Run 最多允許根數（6 根 = 1 天，超過視為緩漲/跌）
+RUN_VOLUME_MULT         = 1.5    # Run 均量門檻倍數（相對前 RUN_VOLUME_BASELINE_N 根均量）
+RUN_VOLUME_BASELINE_N   = 20     # Run 量能基準參考根數（前 N 根歷史 4h K 棒）

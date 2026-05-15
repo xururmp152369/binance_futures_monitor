@@ -42,7 +42,7 @@ class TestShortRunDetection:
         ts2   = TS0 + 2 * _4H_MS
         open3 = candles[-1][4]
         low3  = candles[-1][3] * 1.001   # 高於最後一根 low → 不創新低
-        c3 = (ts2, open3, open3 * 1.002, low3, open3 * 0.999)
+        c3 = (ts2, open3, open3 * 1.002, low3, open3 * 0.999, 1000.0)
         on_new_4h_candle_short(SYM, c3)
         assert _st()["phase"] == StrategyPhase.TRACKING
 
@@ -54,7 +54,7 @@ class TestShortRunDetection:
         ts2   = TS0 + 2 * _4H_MS
         open3 = candles[-1][4]
         low3  = candles[-1][3] * 1.01
-        c3 = (ts2, open3, open3 * 1.001, low3, open3 * 1.001)
+        c3 = (ts2, open3, open3 * 1.001, low3, open3 * 1.001, 1000.0)
         on_new_4h_candle_short(SYM, c3)
         assert _st().get("phase", StrategyPhase.IDLE) == StrategyPhase.IDLE
 
@@ -64,9 +64,26 @@ class TestShortRunDetection:
         on_new_4h_candle_short(SYM, candles[0])
         ts1    = TS0 + _4H_MS
         close1 = candles[0][4]
-        bull   = (ts1, close1, close1 * 1.005, close1 * 0.999, close1 * 1.002)
+        bull   = (ts1, close1, close1 * 1.005, close1 * 0.999, close1 * 1.002, 1000.0)
         on_new_4h_candle_short(SYM, bull)
         assert _st().get("phase", StrategyPhase.IDLE) == StrategyPhase.IDLE
+
+    def test_run_triggered_by_bullish_stop_candle_no_new_run(self):
+        """達標 run + 陽線停止根 → 進入 TRACKING，但不啟動新 run。"""
+        candles, _ = make_short_run(TS0, [9.0])
+        on_new_4h_candle_short(SYM, candles[0])
+        # 陽線：low > run_low（停止 run），close > open（不啟動新 run）
+        ts1    = TS0 + _4H_MS
+        open2  = candles[0][4]
+        close2 = round(open2 * 1.01, 8)
+        low2   = round(candles[0][3] * 1.001, 8)
+        high2  = round(close2 * 1.002, 8)
+        c2 = (ts1, open2, high2, low2, close2, 1000.0)
+        on_new_4h_candle_short(SYM, c2)
+
+        st = _st()
+        assert st["phase"] == StrategyPhase.TRACKING
+        assert st["run_low"] is None
 
     def test_state_fields_after_tracking_entry(self):
         """進入 TRACKING 後，頂部 = run 第一根的 high，底部 = run 的最低 low。"""
@@ -76,7 +93,7 @@ class TestShortRunDetection:
         ts2   = TS0 + 2 * _4H_MS
         open3 = candles[-1][4]
         low3  = candles[-1][3] * 1.001
-        c3 = (ts2, open3, open3 * 1.001, low3, open3 * 0.999)
+        c3 = (ts2, open3, open3 * 1.001, low3, open3 * 0.999, 1000.0)
         on_new_4h_candle_short(SYM, c3)
 
         st = _st()
@@ -90,7 +107,7 @@ class TestShortRunDetection:
         on_new_4h_candle_short(SYM, candles[0])
         ts1  = TS0 + _4H_MS
         c0   = candles[0]
-        bull = (ts1, c0[4], c0[4] * 1.005, c0[4] * 0.999, c0[4] * 1.002)
+        bull = (ts1, c0[4], c0[4] * 1.005, c0[4] * 0.999, c0[4] * 1.002, 1000.0)
         on_new_4h_candle_short(SYM, bull)
 
         # 新 run：兩根陰線累積 10%
@@ -99,7 +116,7 @@ class TestShortRunDetection:
         close2 = round(open2 * 0.95, 8)
         high2  = round(open2 * 1.002, 8)
         low2   = round(close2 * 0.998, 8)
-        c2 = (ts2, open2, high2, low2, close2)
+        c2 = (ts2, open2, high2, low2, close2, 1000.0)
         on_new_4h_candle_short(SYM, c2)
 
         ts3    = ts2 + _4H_MS
@@ -107,11 +124,11 @@ class TestShortRunDetection:
         close3 = round(open3 * 0.95, 8)
         high3  = round(open3 * 1.002, 8)
         low3   = round(close3 * 0.998, 8)
-        c3 = (ts3, open3, high3, low3, close3)
+        c3 = (ts3, open3, high3, low3, close3, 1000.0)
         on_new_4h_candle_short(SYM, c3)
 
         ts4  = ts3 + _4H_MS
-        c4 = (ts4, close3, close3 * 1.001, low3 * 1.001, close3 * 1.0005)
+        c4 = (ts4, close3, close3 * 1.001, low3 * 1.001, close3 * 1.0005, 1000.0)
         on_new_4h_candle_short(SYM, c4)
 
         st = _st()
@@ -127,7 +144,7 @@ class TestShortConsolidation:
         prev_low = _st()["consolidation_low"]
         ts_next  = TS0 + 2 * _4H_MS
         new_low  = prev_low * 0.95
-        c = (ts_next, prev_low, prev_low * 1.002, new_low, new_low * 1.002)
+        c = (ts_next, prev_low, prev_low * 1.002, new_low, new_low * 1.002, 1000.0)
         on_new_4h_candle_short(SYM, c)
         assert _st()["consolidation_low"]      == pytest.approx(new_low, rel=1e-6)
         assert _st()["consolidation_start_ts"] == pytest.approx(ts_next / 1000, rel=1e-6)
@@ -137,7 +154,7 @@ class TestShortConsolidation:
         trigger_short_tracking(SYM, TS0, drop_pct=9.0)
         prev_low = _st()["consolidation_low"]
         ts_next  = TS0 + 2 * _4H_MS
-        c = (ts_next, prev_low * 1.01, prev_low * 1.015, prev_low * 1.001, prev_low * 1.005)
+        c = (ts_next, prev_low * 1.01, prev_low * 1.015, prev_low * 1.001, prev_low * 1.005, 1000.0)
         on_new_4h_candle_short(SYM, c)
         assert _st()["consolidation_low"] == pytest.approx(prev_low, rel=1e-6)
 
@@ -146,7 +163,7 @@ class TestShortConsolidation:
         peak_ts  = _st()["consolidation_start_ts"]
         ts_ready = int((peak_ts + 13 * 3600) * 1000)
         prev_low = _st()["consolidation_low"]
-        c = (ts_ready, prev_low * 1.01, prev_low * 1.015, prev_low * 1.001, prev_low * 1.005)
+        c = (ts_ready, prev_low * 1.01, prev_low * 1.015, prev_low * 1.001, prev_low * 1.005, 1000.0)
         on_new_4h_candle_short(SYM, c)
         assert _st()["phase"] == StrategyPhase.READY
 
@@ -155,13 +172,13 @@ class TestShortConsolidation:
         peak_ts  = _st()["consolidation_start_ts"]
         prev_low = _st()["consolidation_low"]
         ts_ready = int((peak_ts + 13 * 3600) * 1000)
-        c_flat = (ts_ready, prev_low * 1.01, prev_low * 1.015, prev_low * 1.001, prev_low * 1.005)
+        c_flat = (ts_ready, prev_low * 1.01, prev_low * 1.015, prev_low * 1.001, prev_low * 1.005, 1000.0)
         on_new_4h_candle_short(SYM, c_flat)
         assert _st()["phase"] == StrategyPhase.READY
 
         ts_ext  = ts_ready + _4H_MS
         new_low = prev_low * 0.97
-        c_ext = (ts_ext, prev_low, prev_low * 1.002, new_low, new_low * 1.002)
+        c_ext = (ts_ext, prev_low, prev_low * 1.002, new_low, new_low * 1.002, 1000.0)
         on_new_4h_candle_short(SYM, c_ext)
         assert _st()["phase"] == StrategyPhase.TRACKING
         assert _st()["consolidation_low"] == pytest.approx(new_low, rel=1e-6)
@@ -174,7 +191,7 @@ class TestShortInvalidation:
         trigger_short_tracking(SYM, TS0, drop_pct=9.0)
         top     = _st()["consolidation_high"]
         ts_next = TS0 + 2 * _4H_MS
-        c = (ts_next, top * 0.99, top * 1.01, top * 0.985, top * 1.005)
+        c = (ts_next, top * 0.99, top * 1.01, top * 0.985, top * 1.005, 1000.0)
         on_new_4h_candle_short(SYM, c)
         assert _st()["phase"] == StrategyPhase.IDLE
 
@@ -182,9 +199,24 @@ class TestShortInvalidation:
         trigger_short_tracking(SYM, TS0, drop_pct=9.0)
         top     = _st()["consolidation_high"]
         ts_next = TS0 + 2 * _4H_MS
-        c = (ts_next, top * 0.99, top, top * 0.985, top * 0.995)
+        c = (ts_next, top * 0.99, top, top * 0.985, top * 0.995, 1000.0)
         on_new_4h_candle_short(SYM, c)
         assert _st()["phase"] != StrategyPhase.IDLE
+
+    def test_ready_phase_invalidated_by_4h_high(self):
+        """READY 階段 4h K high > consolidation_high → 廢棄至 IDLE。"""
+        trigger_short_tracking(SYM, TS0, drop_pct=9.0)
+        peak_ts  = _st()["consolidation_start_ts"]
+        ts_ready = int((peak_ts + 13 * 3600) * 1000)
+        prev_low = _st()["consolidation_low"]
+        on_new_4h_candle_short(SYM, (ts_ready, prev_low * 1.01, prev_low * 1.015, prev_low * 1.001, prev_low * 1.005, 1000.0))
+        assert _st()["phase"] == StrategyPhase.READY
+
+        top     = _st()["consolidation_high"]
+        ts_next = ts_ready + _4H_MS
+        c = (ts_next, top * 0.99, top * 1.02, top * 0.985, top * 1.01, 1000.0)
+        on_new_4h_candle_short(SYM, c)
+        assert _st()["phase"] == StrategyPhase.IDLE
 
 
 # ─── Method B（盤整內 sub-run 重置）─────────────────────────────────────────
@@ -204,7 +236,7 @@ class TestShortMethodB:
         sub_close = round(sub_open * 0.95, 8)
         sub_high  = round(sub_open * 1.002, 8)
         sub_low   = round(sub_close * 0.998, 8)
-        c1 = (ts_base, sub_open, sub_high, sub_low, sub_close)
+        c1 = (ts_base, sub_open, sub_high, sub_low, sub_close, 1000.0)
         on_new_4h_candle_short(SYM, c1)
 
         ts2    = ts_base + _4H_MS
@@ -212,13 +244,13 @@ class TestShortMethodB:
         close2 = round(open2 * 0.958, 8)
         low2   = round(close2 * 0.998, 8)
         high2  = round(open2 * 1.002, 8)
-        c2 = (ts2, open2, high2, low2, close2)
+        c2 = (ts2, open2, high2, low2, close2, 1000.0)
         on_new_4h_candle_short(SYM, c2)
 
         # 第三根不創新低 → sub-run 結束 → Method B
         ts3   = ts2 + _4H_MS
         open3 = close2
-        c3 = (ts3, open3, open3 * 1.001, low2 * 1.001, open3 * 1.0005)
+        c3 = (ts3, open3, open3 * 1.001, low2 * 1.001, open3 * 1.0005, 1000.0)
         on_new_4h_candle_short(SYM, c3)
 
         st = _st()
@@ -238,18 +270,18 @@ class TestShortMethodB:
         sub_high = old_top   # run_start_high == old_top，不小於
         sub_close = round(sub_open * 0.95, 8)
         sub_low   = round(sub_close * 0.998, 8)
-        c1 = (ts_base, sub_open, sub_high, sub_low, sub_close)
+        c1 = (ts_base, sub_open, sub_high, sub_low, sub_close, 1000.0)
         on_new_4h_candle_short(SYM, c1)
 
         ts2    = ts_base + _4H_MS
         open2  = sub_close
         close2 = round(open2 * 0.958, 8)
         low2   = round(close2 * 0.998, 8)
-        c2 = (ts2, open2, sub_high * 0.999, low2, close2)
+        c2 = (ts2, open2, sub_high * 0.999, low2, close2, 1000.0)
         on_new_4h_candle_short(SYM, c2)
 
         ts3   = ts2 + _4H_MS
-        c3 = (ts3, close2, close2 * 1.001, low2 * 1.001, close2 * 1.0005)
+        c3 = (ts3, close2, close2 * 1.001, low2 * 1.001, close2 * 1.0005, 1000.0)
         on_new_4h_candle_short(SYM, c3)
 
         st = _st()
@@ -268,12 +300,12 @@ class TestShortMethodB:
         sub_close = round(sub_open * 0.97, 8)
         sub_high  = round(sub_open * 1.002, 8)
         sub_low   = round(sub_close * 0.998, 8)
-        on_new_4h_candle_short(SYM, (ts_base, sub_open, sub_high, sub_low, sub_close))
+        on_new_4h_candle_short(SYM, (ts_base, sub_open, sub_high, sub_low, sub_close, 1000.0))
 
         # 下一根直接跌破 consolidation_low → 整體延伸（不是 Method B）
         ts2     = ts_base + _4H_MS
         new_low = old_bottom * 0.95
-        on_new_4h_candle_short(SYM, (ts2, sub_close, sub_close * 1.002, new_low, new_low * 1.002))
+        on_new_4h_candle_short(SYM, (ts2, sub_close, sub_close * 1.002, new_low, new_low * 1.002, 1000.0))
 
         st = _st()
         assert st["phase"] == StrategyPhase.TRACKING
@@ -291,7 +323,7 @@ class TestType1ShortSignal:
         peak_ts  = st["consolidation_start_ts"]
         ts_ready = int((peak_ts + 13 * 3600) * 1000)
         bottom   = st["consolidation_low"]
-        c = (ts_ready, bottom * 1.01, bottom * 1.015, bottom * 1.001, bottom * 1.005)
+        c = (ts_ready, bottom * 1.01, bottom * 1.015, bottom * 1.001, bottom * 1.005, 1000.0)
         on_new_4h_candle_short(SYM, c)
         assert _st()["phase"] == StrategyPhase.READY
         setup_symbol_state(SYM, kline_15m_ohlc=make_15m_ohlc_deque(count=200, base_volume=100.0))

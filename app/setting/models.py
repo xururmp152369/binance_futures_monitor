@@ -3,6 +3,7 @@ from .config import (
     PUMP_THRESHOLD, CONSOLIDATION_MIN_HOURS, BREAKOUT_VOLUME_MULT, LOOKBACK_VOLUME_MULT,
     EMA_TOUCH_THRESHOLD, WICK_THRESHOLD, STRATEGY_RR_MIN, STRATEGY_COOLDOWN,
     QUOTE_VOLUME,
+    RUN_MAX_CANDLES, RUN_VOLUME_MULT, RUN_VOLUME_BASELINE_N,
 )
 
 """專案全域共享狀態（in-memory）。
@@ -41,4 +42,7 @@ runtime_config: dict = {
     "WICK_THRESHOLD":          WICK_THRESHOLD,           # Type2 有效收針 (%)
     "STRATEGY_RR_MIN":         STRATEGY_RR_MIN,          # Type2 最低盈虧比
     "STRATEGY_COOLDOWN":       STRATEGY_COOLDOWN,        # 策略告警冷卻 (秒)
+    "RUN_MAX_CANDLES":         RUN_MAX_CANDLES,          # Run 最多允許根數
+    "RUN_VOLUME_MULT":         RUN_VOLUME_MULT,          # Run 均量門檻倍數
+    "RUN_VOLUME_BASELINE_N":   RUN_VOLUME_BASELINE_N,    # Run 量能基準參考根數
 }

@@ -35,6 +35,10 @@ def _init_state() -> dict:
         "run_start_high":         None,   # 空頭廢棄線候選（第一根的 high）
         "run_low":                None,   # 空頭：追蹤最低點
         "run_low_ts":             None,   # 空頭：最後創新低的時間
+        # ── Run 量能追蹤 ─────────────────────────────────────────────────
+        "run_candle_count":       0,      # run 期間已累積根數
+        "run_volume_sum":         0.0,    # run 期間量能總和
+        "run_volume_baseline":    None,   # run 啟動時的基準均量（前 RUN_VOLUME_BASELINE_N 根）
     }
 
 
@@ -65,6 +69,43 @@ def _maybe_transition_to_ready(st: dict, current_ts: float, symbol: str) -> None
             f"已盤整 {elapsed_h:.1f}h | "
             f"底部={st['consolidation_low']:.6f} 頂部={st['consolidation_high']:.6f}"
         )
+
+
+def _capture_run_volume_baseline(symbol: str) -> float | None:
+    """在 run 啟動時，從 kline_4h_ohlc 取前 RUN_VOLUME_BASELINE_N 根計算基準均量。"""
+    n = models.runtime_config["RUN_VOLUME_BASELINE_N"]
+    ohlc = models.symbol_state.get(symbol, {}).get("kline_4h_ohlc")
+    if not ohlc:
+        return None
+    # 排除剛加入的當前根（[-1]），取其之前最多 N 根
+    candidates = list(ohlc)[:-1]
+    baseline_candles = candidates[-n:] if len(candidates) >= n else candidates
+    if not baseline_candles:
+        return None
+    return sum(c[5] for c in baseline_candles) / len(baseline_candles)
+
+
+def _check_run_volume(st: dict) -> bool:
+    """檢查 run 均量是否 >= baseline × RUN_VOLUME_MULT；baseline 不足時視為通過。"""
+    baseline = st["run_volume_baseline"]
+    if baseline is None or baseline <= 0:
+        return True
+    run_avg = st["run_volume_sum"] / st["run_candle_count"]
+    return run_avg >= baseline * models.runtime_config["RUN_VOLUME_MULT"]
+
+
+def _reset_run_tracking(st: dict) -> None:
+    """清空 run 追蹤欄位（多頭空頭共用欄位）。"""
+    st["run_start_open"]      = None
+    st["run_start_low"]       = None
+    st["run_high"]            = None
+    st["run_high_ts"]         = None
+    st["run_start_high"]      = None
+    st["run_low"]             = None
+    st["run_low_ts"]          = None
+    st["run_candle_count"]    = 0
+    st["run_volume_sum"]      = 0.0
+    st["run_volume_baseline"] = None
 
 
 # 向下相容的公開別名（原有呼叫端使用）
@@ -125,10 +166,10 @@ def on_new_4h_candle(symbol: str, candle: tuple) -> None:
     """處理新 4h K 棒收盤：多頭狀態機（IDLE/TRACKING/READY）。
 
     偵測連續陽線累積漲幅達 PUMP_THRESHOLD%，進入盤整追蹤。
-    candle: (open_time_ms, open, high, low, close)
+    candle: (open_time_ms, open, high, low, close, quote_volume)
     """
     st = _get_or_init(symbol, models.strategy_state)
-    open_time_ms, open_, high, low, close = candle
+    open_time_ms, open_, high, low, close, quote_volume = candle
     current_ts = open_time_ms / 1000
     threshold  = models.runtime_config["PUMP_THRESHOLD"]
 
@@ -152,10 +193,7 @@ def on_new_4h_candle(symbol: str, candle: tuple) -> None:
             note = "（原 READY 回退）" if prev_phase == StrategyPhase.READY else ""
             log.info(f"[策略-L] {symbol} 延伸新高 {high:.6f}{note} → 盤整計時重置")
             # 整體延伸 → 吸收任何 sub-run，清空 run 追蹤
-            st["run_start_open"] = None
-            st["run_start_low"]  = None
-            st["run_high"]       = None
-            st["run_high_ts"]    = None
+            _reset_run_tracking(st)
             _maybe_transition_to_ready(st, current_ts, symbol)
             return
 
@@ -163,33 +201,48 @@ def on_new_4h_candle(symbol: str, candle: tuple) -> None:
     if st["run_high"] is not None:
         if high > st["run_high"]:
             # 創新高 → 延伸 run
-            st["run_high"]    = high
-            st["run_high_ts"] = current_ts
+            st["run_high"]         = high
+            st["run_high_ts"]      = current_ts
+            st["run_candle_count"] += 1
+            st["run_volume_sum"]   += quote_volume
         else:
-            # 未創新高 → run 停止，檢查是否達到門檻
+            # 未創新高 → run 停止，三重評估
             cumulative_pct = (st["run_high"] - st["run_start_open"]) / st["run_start_open"] * 100
-            if cumulative_pct >= threshold:
+            max_candles    = models.runtime_config["RUN_MAX_CANDLES"]
+            if (cumulative_pct >= threshold
+                    and st["run_candle_count"] <= max_candles
+                    and _check_run_volume(st)):
                 _apply_run_long(st, symbol, close, cumulative_pct)
+            elif cumulative_pct >= threshold:
+                log.debug(
+                    f"[策略-L] {symbol} run 達幅 {cumulative_pct:.1f}% 但未通過篩選 "
+                    f"| 根數={st['run_candle_count']}/{max_candles} "
+                    f"| 均量={st['run_volume_sum']/st['run_candle_count']:.0f} "
+                    f"| baseline={st['run_volume_baseline']}"
+                )
 
             # 重置 run
-            st["run_start_open"] = None
-            st["run_start_low"]  = None
-            st["run_high"]       = None
-            st["run_high_ts"]    = None
+            _reset_run_tracking(st)
 
             # 本根若為陽線，立刻開始新的 run
             if close > open_:
-                st["run_start_open"] = open_
-                st["run_start_low"]  = low
-                st["run_high"]       = high
-                st["run_high_ts"]    = current_ts
+                st["run_start_open"]      = open_
+                st["run_start_low"]       = low
+                st["run_high"]            = high
+                st["run_high_ts"]         = current_ts
+                st["run_candle_count"]    = 1
+                st["run_volume_sum"]      = quote_volume
+                st["run_volume_baseline"] = _capture_run_volume_baseline(symbol)
     else:
         # 尚無進行中的 run → 陽線啟動
         if close > open_:
-            st["run_start_open"] = open_
-            st["run_start_low"]  = low
-            st["run_high"]       = high
-            st["run_high_ts"]    = current_ts
+            st["run_start_open"]      = open_
+            st["run_start_low"]       = low
+            st["run_high"]            = high
+            st["run_high_ts"]         = current_ts
+            st["run_candle_count"]    = 1
+            st["run_volume_sum"]      = quote_volume
+            st["run_volume_baseline"] = _capture_run_volume_baseline(symbol)
 
     _maybe_transition_to_ready(st, current_ts, symbol)
 
@@ -244,10 +297,10 @@ def on_new_4h_candle_short(symbol: str, candle: tuple) -> None:
 
     偵測連續陰線累積跌幅達 PUMP_THRESHOLD%，進入盤整追蹤。
     與多頭完全對稱：創新低延伸；突破頂部廢棄。
-    candle: (open_time_ms, open, high, low, close)
+    candle: (open_time_ms, open, high, low, close, quote_volume)
     """
     st = _get_or_init(symbol, models.strategy_state_short)
-    open_time_ms, open_, high, low, close = candle
+    open_time_ms, open_, high, low, close, quote_volume = candle
     current_ts = open_time_ms / 1000
     threshold  = models.runtime_config["PUMP_THRESHOLD"]
 
@@ -270,11 +323,8 @@ def on_new_4h_candle_short(symbol: str, candle: tuple) -> None:
             st["phase"]                  = StrategyPhase.TRACKING
             note = "（原 READY 回退）" if prev_phase == StrategyPhase.READY else ""
             log.info(f"[策略-S] {symbol} 延伸新低 {low:.6f}{note} → 盤整計時重置")
-            # 整體延伸 → 吸收任何 sub-run
-            st["run_start_open"] = None
-            st["run_start_high"] = None
-            st["run_low"]        = None
-            st["run_low_ts"]     = None
+            # 整體延伸 → 吸收任何 sub-run，清空 run 追蹤
+            _reset_run_tracking(st)
             _maybe_transition_to_ready(st, current_ts, symbol)
             return
 
@@ -282,33 +332,48 @@ def on_new_4h_candle_short(symbol: str, candle: tuple) -> None:
     if st["run_low"] is not None:
         if low < st["run_low"]:
             # 創新低 → 延伸 run
-            st["run_low"]    = low
-            st["run_low_ts"] = current_ts
+            st["run_low"]          = low
+            st["run_low_ts"]       = current_ts
+            st["run_candle_count"] += 1
+            st["run_volume_sum"]   += quote_volume
         else:
-            # 未創新低 → run 停止，檢查是否達到門檻
+            # 未創新低 → run 停止，三重評估
             cumulative_pct = (st["run_start_open"] - st["run_low"]) / st["run_start_open"] * 100
-            if cumulative_pct >= threshold:
+            max_candles    = models.runtime_config["RUN_MAX_CANDLES"]
+            if (cumulative_pct >= threshold
+                    and st["run_candle_count"] <= max_candles
+                    and _check_run_volume(st)):
                 _apply_run_short(st, symbol, close, cumulative_pct)
+            elif cumulative_pct >= threshold:
+                log.debug(
+                    f"[策略-S] {symbol} run 達幅 {cumulative_pct:.1f}% 但未通過篩選 "
+                    f"| 根數={st['run_candle_count']}/{max_candles} "
+                    f"| 均量={st['run_volume_sum']/st['run_candle_count']:.0f} "
+                    f"| baseline={st['run_volume_baseline']}"
+                )
 
             # 重置 run
-            st["run_start_open"] = None
-            st["run_start_high"] = None
-            st["run_low"]        = None
-            st["run_low_ts"]     = None
+            _reset_run_tracking(st)
 
             # 本根若為陰線，立刻開始新的 run
             if close < open_:
-                st["run_start_open"] = open_
-                st["run_start_high"] = high
-                st["run_low"]        = low
-                st["run_low_ts"]     = current_ts
+                st["run_start_open"]      = open_
+                st["run_start_high"]      = high
+                st["run_low"]             = low
+                st["run_low_ts"]          = current_ts
+                st["run_candle_count"]    = 1
+                st["run_volume_sum"]      = quote_volume
+                st["run_volume_baseline"] = _capture_run_volume_baseline(symbol)
     else:
         # 尚無進行中的 run → 陰線啟動
         if close < open_:
-            st["run_start_open"] = open_
-            st["run_start_high"] = high
-            st["run_low"]        = low
-            st["run_low_ts"]     = current_ts
+            st["run_start_open"]      = open_
+            st["run_start_high"]      = high
+            st["run_low"]             = low
+            st["run_low_ts"]          = current_ts
+            st["run_candle_count"]    = 1
+            st["run_volume_sum"]      = quote_volume
+            st["run_volume_baseline"] = _capture_run_volume_baseline(symbol)
 
     _maybe_transition_to_ready(st, current_ts, symbol)
 
