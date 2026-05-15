@@ -2,8 +2,6 @@ import json
 from datetime import datetime
 from telegram import Update
 from telegram.ext import ContextTypes
-from ..setting.models import symbol_state, strategy_state
-from ..strategy.state_machine import StrategyPhase
 from ..user.user_config import (
     CONFIG_TEMPLATE_TEXT,
     get_user_config,
@@ -309,61 +307,7 @@ async def command(update: Update, _context: ContextTypes.DEFAULT_TYPE):
         "/setup — 取得自動開單設定範本\n"
         "/myconfig — 查看目前個人設定\n"
         "/myconfig 欄位 值 — 更新單一欄位，例：/myconfig LONG_ORDER_LIMIT 5\n\n"
-        "📊 行情查詢：\n"
-        "/strategy <coin> — 查看策略狀態，ex: btc\n"
     )
 
-
-async def strategy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/strategy 指令：查看指定幣種的策略狀態機當前狀態。"""
-    args = context.args
-    if not args:
-        await update.message.reply_text("用法：\n/strategy btc\n查看指定幣種的策略狀態")
-        return
-
-    symbols = [arg.upper() if "USDT" in arg.upper() else f"{arg.upper()}USDT" for arg in args]
-
-    for symbol in symbols:
-        if symbol not in symbol_state:
-            await update.message.reply_text(f"{symbol}：未監控的幣對")
-            continue
-
-        st = strategy_state.get(symbol)
-        if not st:
-            await update.message.reply_text(f"{symbol}：尚無策略狀態（IDLE）")
-            continue
-
-        phase = st.get("phase", StrategyPhase.IDLE)
-        phase_label = {
-            StrategyPhase.IDLE:     "💤 IDLE（閒置）",
-            StrategyPhase.TRACKING: "👀 TRACKING（追蹤盤整）",
-            StrategyPhase.READY:    "✅ READY（就緒，監控訊號）",
-        }.get(phase, str(phase))
-
-        lines = [f"📊 *{symbol} 策略狀態*", f"Phase：{phase_label}"]
-
-        if phase != StrategyPhase.IDLE:
-            pump_time = st.get("pump_candle_time")
-            pump_time_str = (
-                datetime.fromtimestamp(pump_time).strftime("%Y/%m/%d %H:%M")
-                if pump_time else "N/A"
-            )
-            start_ts = st.get("consolidation_start_ts")
-            elapsed_h = (datetime.now().timestamp() - start_ts) / 3600 if start_ts else 0
-
-            lines += [
-                f"拉漲時間：{pump_time_str}",
-                f"已盤整：{elapsed_h:.1f} 小時",
-                f"盤整底部：`{st.get('consolidation_low', 0):.6f}`",
-                f"盤整頂部：`{st.get('consolidation_high', 0):.6f}`",
-            ]
-
-        last_ts = st.get("last_alert_ts", 0)
-        last_type = st.get("last_signal_type")
-        if last_ts and last_type:
-            last_str = datetime.fromtimestamp(last_ts).strftime("%Y/%m/%d %H:%M")
-            lines.append(f"上次訊號：{last_type} ({last_str})")
-
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 

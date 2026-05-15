@@ -1,6 +1,12 @@
 import time
 from enum import Enum
 from ..setting import models
+from ..setting.config import (
+    CONSOLIDATION_MIN_HOURS,
+    RUN_VOLUME_BASELINE_N, RUN_VOLUME_MULT,
+    PUMP_THRESHOLD, RUN_MAX_CANDLES,
+    BREAKOUT_VOLUME_MULT, STRATEGY_COOLDOWN, LOOKBACK_VOLUME_MULT,
+)
 from ..extension.utils import setup_logging
 
 log = setup_logging()
@@ -59,7 +65,7 @@ def _maybe_transition_to_ready(st: dict, current_ts: float, symbol: str) -> None
     if st["phase"] != StrategyPhase.TRACKING:
         return
     elapsed_h = (current_ts - st["consolidation_start_ts"]) / 3600
-    if elapsed_h >= models.runtime_config["CONSOLIDATION_MIN_HOURS"]:
+    if elapsed_h >= CONSOLIDATION_MIN_HOURS:
         st["phase"] = StrategyPhase.READY
         log.info(
             f"[策略] {symbol} TRACKING → READY | "
@@ -70,7 +76,7 @@ def _maybe_transition_to_ready(st: dict, current_ts: float, symbol: str) -> None
 
 def _capture_run_volume_baseline(symbol: str) -> float | None:
     """在 run 啟動時，從 kline_4h_ohlc 取前 RUN_VOLUME_BASELINE_N 根計算基準均量。"""
-    n = models.runtime_config["RUN_VOLUME_BASELINE_N"]
+    n = RUN_VOLUME_BASELINE_N
     ohlc = models.symbol_state.get(symbol, {}).get("kline_4h_ohlc")
     if not ohlc:
         return None
@@ -88,7 +94,7 @@ def _check_run_volume(st: dict) -> bool:
     if baseline is None or baseline <= 0:
         return True
     run_avg = st["run_volume_sum"] / st["run_candle_count"]
-    return run_avg >= baseline * models.runtime_config["RUN_VOLUME_MULT"]
+    return run_avg >= baseline * RUN_VOLUME_MULT
 
 
 def _reset_run_tracking(st: dict) -> None:
@@ -165,7 +171,7 @@ def on_new_4h_candle(symbol: str, candle: tuple) -> None:
     st = _get_or_init(symbol, models.strategy_state)
     open_time_ms, open_, high, low, close, quote_volume = candle
     current_ts = open_time_ms / 1000
-    threshold  = models.runtime_config["PUMP_THRESHOLD"]
+    threshold  = PUMP_THRESHOLD
 
     # ─── 廢棄：跌破盤整底部 ─────────────────────────
     if st["phase"] != StrategyPhase.IDLE and st["consolidation_low"] is not None:
@@ -202,7 +208,7 @@ def on_new_4h_candle(symbol: str, candle: tuple) -> None:
         else:
             # 未創新高 → run 停止，三重評估
             cumulative_pct = (st["run_high"] - st["run_start_open"]) / st["run_start_open"] * 100
-            max_candles    = models.runtime_config["RUN_MAX_CANDLES"]
+            max_candles    = RUN_MAX_CANDLES
             if (cumulative_pct >= threshold
                     and st["run_candle_count"] <= max_candles
                     and _check_run_volume(st)):
@@ -270,17 +276,17 @@ def on_new_15m_candle(symbol: str, candle: tuple) -> dict | None:
         return None
 
     vol_ratio = volume / avg_vol
-    if vol_ratio < models.runtime_config["BREAKOUT_VOLUME_MULT"]:
-        log.debug(f"[策略-T1] {symbol} 突破頂部但量能不足 {vol_ratio:.1f}× < {models.runtime_config['BREAKOUT_VOLUME_MULT']}×")
+    if vol_ratio < BREAKOUT_VOLUME_MULT:
+        log.debug(f"[策略-T1] {symbol} 突破頂部但量能不足 {vol_ratio:.1f}× < {BREAKOUT_VOLUME_MULT}×")
         return None
 
     now = time.time()
-    if now - st["last_alert_ts"] < models.runtime_config["STRATEGY_COOLDOWN"]:
+    if now - st["last_alert_ts"] < STRATEGY_COOLDOWN:
         return None
 
     _4H_MS = 4 * 3600 * 1000
     current_4h_open_ms = (open_time_ms // _4H_MS) * _4H_MS
-    lookback_threshold = avg_vol * models.runtime_config["LOOKBACK_VOLUME_MULT"]
+    lookback_threshold = avg_vol * LOOKBACK_VOLUME_MULT
 
     stop_loss = low
     for i in range(len(ohlc_list) - 2, -1, -1):

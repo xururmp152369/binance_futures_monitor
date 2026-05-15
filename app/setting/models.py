@@ -1,10 +1,4 @@
 from collections import defaultdict, deque
-from .config import (
-    PUMP_THRESHOLD, CONSOLIDATION_MIN_HOURS, BREAKOUT_VOLUME_MULT, LOOKBACK_VOLUME_MULT,
-    STRATEGY_COOLDOWN,
-    QUOTE_VOLUME,
-    RUN_MAX_CANDLES, RUN_VOLUME_MULT, RUN_VOLUME_BASELINE_N,
-)
 
 """專案全域共享狀態（in-memory）。
 
@@ -15,7 +9,6 @@ from .config import (
 - symbol_state: 每個幣種的即時狀態（價格/EMA 等）
 - price_history: 價格歷史（供 /s 指令查詢）
 - bot: Telegram bot instance（初始化後寫入）
-- runtime_config: 可在執行期透過 /config 指令動態調整的參數
 """
 
 # ================== 全域狀態 ==================
@@ -26,19 +19,3 @@ bot = None
 
 # ================== 策略狀態 ==================
 strategy_state = {}  # symbol → 策略狀態 dict（由 state_machine 管理）
-
-# ================== 執行期可調整參數 ==================
-# 從 config.py 初始化；可透過 /config set PARAM VALUE 動態修改，重啟後還原預設值
-runtime_config: dict = {
-    # --- 幣種篩選 ---
-    "QUOTE_VOLUME":            QUOTE_VOLUME,             # 24h 最低成交量 (USDT)
-    # --- 策略狀態機 ---
-    "PUMP_THRESHOLD":          PUMP_THRESHOLD,           # 4h 拉漲門檻 (%)
-    "CONSOLIDATION_MIN_HOURS": CONSOLIDATION_MIN_HOURS,  # 最低盤整時數 (h)
-    "BREAKOUT_VOLUME_MULT":    BREAKOUT_VOLUME_MULT,     # Type1 突破量能倍數
-    "LOOKBACK_VOLUME_MULT":    LOOKBACK_VOLUME_MULT,     # Type1 回推放量序列門檻
-    "STRATEGY_COOLDOWN":       STRATEGY_COOLDOWN,        # 策略告警冷卻 (秒)
-    "RUN_MAX_CANDLES":         RUN_MAX_CANDLES,          # Run 最多允許根數
-    "RUN_VOLUME_MULT":         RUN_VOLUME_MULT,          # Run 均量門檻倍數
-    "RUN_VOLUME_BASELINE_N":   RUN_VOLUME_BASELINE_N,    # Run 量能基準參考根數
-}

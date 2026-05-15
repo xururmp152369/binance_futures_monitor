@@ -166,7 +166,7 @@ class TestConsolidation:
     def test_tracking_to_ready_after_min_hours(self):
         trigger_long_tracking(SYM, TS0, gain_pct=9.0)
         peak_ts  = _st()["consolidation_start_ts"]
-        ts_ready = int((peak_ts + 13 * 3600) * 1000)
+        ts_ready = int((peak_ts + 17 * 3600) * 1000)
         prev_high = _st()["consolidation_high"]
         c = (ts_ready, prev_high * 0.99, prev_high * 0.999, prev_high * 0.985, prev_high * 0.995, 1000.0)
         on_new_4h_candle(SYM, c)
@@ -176,7 +176,7 @@ class TestConsolidation:
         trigger_long_tracking(SYM, TS0, gain_pct=9.0)
         peak_ts   = _st()["consolidation_start_ts"]
         prev_high = _st()["consolidation_high"]
-        ts_ready  = int((peak_ts + 13 * 3600) * 1000)
+        ts_ready  = int((peak_ts + 17 * 3600) * 1000)
         c_flat = (ts_ready, prev_high * 0.99, prev_high * 0.999, prev_high * 0.985, prev_high * 0.995, 1000.0)
         on_new_4h_candle(SYM, c_flat)
         assert _st()["phase"] == StrategyPhase.READY
@@ -212,7 +212,7 @@ class TestInvalidation:
         """READY 階段 4h K low < consolidation_low → 廢棄至 IDLE。"""
         trigger_long_tracking(SYM, TS0, gain_pct=9.0)
         peak_ts  = _st()["consolidation_start_ts"]
-        ts_ready = int((peak_ts + 13 * 3600) * 1000)
+        ts_ready = int((peak_ts + 17 * 3600) * 1000)
         top      = _st()["consolidation_high"]
         on_new_4h_candle(SYM, (ts_ready, top * 0.99, top * 0.999, top * 0.985, top * 0.995, 1000.0))
         assert _st()["phase"] == StrategyPhase.READY
@@ -309,7 +309,7 @@ class TestMethodB:
         """READY 階段出現底部更高的 8% sub-run → Method B 觸發，退回 TRACKING。"""
         trigger_long_tracking(SYM, TS0, base=100.0, gain_pct=20.0)
         peak_ts  = _st()["consolidation_start_ts"]
-        ts_ready = int((peak_ts + 13 * 3600) * 1000)
+        ts_ready = int((peak_ts + 17 * 3600) * 1000)
         top      = _st()["consolidation_high"]
         on_new_4h_candle(SYM, (ts_ready, top * 0.99, top * 0.999, top * 0.985, top * 0.995, 1000.0))
         assert _st()["phase"] == StrategyPhase.READY
@@ -348,7 +348,7 @@ class TestType1Signal:
         trigger_long_tracking(SYM, TS0, base=100.0, gain_pct=9.0)
         st       = _st()
         peak_ts  = st["consolidation_start_ts"]
-        ts_ready = int((peak_ts + 13 * 3600) * 1000)
+        ts_ready = int((peak_ts + 17 * 3600) * 1000)
         top      = st["consolidation_high"]
         c = (ts_ready, top * 0.99, top * 0.999, top * 0.985, top * 0.995, 1000.0)
         on_new_4h_candle(SYM, c)
@@ -359,7 +359,7 @@ class TestType1Signal:
         self._setup_ready()
         top = _st()["consolidation_high"]
         ts_candle = TS0 + 14 * 3600 * 1000
-        candle = (ts_candle, top, top * 1.02, top * 0.995, top * 1.015, 400.0)
+        candle = (ts_candle, top, top * 1.02, top * 0.995, top * 1.015, 500.0)
         result = on_new_15m_candle(SYM, candle)
         assert result is not None
         assert result["type"] == "type1"
@@ -382,10 +382,10 @@ class TestType1Signal:
         self._setup_ready()
         top = _st()["consolidation_high"]
         ts_candle = TS0 + 14 * 3600 * 1000
-        candle = (ts_candle, top, top * 1.02, top * 0.995, top * 1.015, 400.0)
+        candle = (ts_candle, top, top * 1.02, top * 0.995, top * 1.015, 500.0)
         r1 = on_new_15m_candle(SYM, candle)
         assert r1 is not None
-        candle2 = (ts_candle + 15 * 60 * 1000, top * 1.01, top * 1.03, top, top * 1.02, 400.0)
+        candle2 = (ts_candle + 15 * 60 * 1000, top * 1.01, top * 1.03, top, top * 1.02, 500.0)
         assert on_new_15m_candle(SYM, candle2) is None
 
     def test_no_signal_when_insufficient_history(self):
@@ -421,7 +421,7 @@ class TestType1Signal:
         setup_symbol_state(SYM, kline_15m_ohlc=make_15m_ohlc_deque(count=200, base_volume=100.0))
         breakout_low = top * 0.990
         ts_candle    = TS0 + 14 * 3600 * 1000
-        candle = (ts_candle, top, top * 1.02, breakout_low, top * 1.015, 400.0)
+        candle = (ts_candle, top, top * 1.02, breakout_low, top * 1.015, 500.0)
         result = on_new_15m_candle(SYM, candle)
         assert result is not None
         assert result["stop_loss"] == pytest.approx(breakout_low, rel=1e-6)

@@ -7,8 +7,6 @@ load_dotenv()
 此模組負責：
 - 從環境變數/`.env` 讀取 Telegram 必要參數（BOT_TOKEN/CHAT_ID）
 - 集中管理告警策略門檻（價格/成交量/OI）與監控行為參數
-
-注意：此檔的常數透過 models.runtime_config 供各模組共享，可在執行期透過 /config 指令動態修改。
 """
 # ================== 設定 ==================
 CHAT_ID        = os.getenv("CHAT_ID")

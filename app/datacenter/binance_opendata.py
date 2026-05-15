@@ -1,8 +1,8 @@
 import asyncio
 import time
 from binance import BinanceSocketManager
-from ..setting.config import EXCLUDE_SYMBOLS, BATCH_SIZE
-from ..setting.models import symbol_state, running, price_history, strategy_state, runtime_config
+from ..setting.config import EXCLUDE_SYMBOLS, BATCH_SIZE, QUOTE_VOLUME
+from ..setting.models import symbol_state, running, price_history, strategy_state
 from ..extension.utils import setup_logging
 from collections import deque
 from ..strategy.state_machine import (
@@ -141,7 +141,7 @@ async def initialize_symbols(client):
         for t in ticker24:
             s = t["symbol"]
             if (s.endswith("USDT") 
-                and float(t["quoteVolume"]) >= runtime_config["QUOTE_VOLUME"] # 24h 成交量
+                and float(t["quoteVolume"]) >= QUOTE_VOLUME # 24h 成交量
                 and not any(s.endswith(ex) for ex in EXCLUDE_SYMBOLS)):
                 valid.add(s)
 

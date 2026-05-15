@@ -2,26 +2,14 @@ import pytest
 from collections import deque
 from app.setting import models
 
-_DEFAULT_RUNTIME_CONFIG = {
-    "PUMP_THRESHOLD":          8,
-    "CONSOLIDATION_MIN_HOURS": 12,
-    "BREAKOUT_VOLUME_MULT":    3,
-    "LOOKBACK_VOLUME_MULT":    2.5,
-    "STRATEGY_COOLDOWN":       14400,
-    "RUN_MAX_CANDLES":         6,
-    "RUN_VOLUME_MULT":         1.5,
-    "RUN_VOLUME_BASELINE_N":   20,
-}
-
 _4H_MS = 4 * 3600 * 1000
 
 
 @pytest.fixture(autouse=True)
 def reset_global_state():
-    """每個測試前後清空全域狀態，並還原 runtime_config 為預設值。"""
+    """每個測試前後清空全域狀態。"""
     models.strategy_state.clear()
     models.symbol_state.clear()
-    models.runtime_config.update(_DEFAULT_RUNTIME_CONFIG)
     yield
     models.strategy_state.clear()
     models.symbol_state.clear()
