@@ -2,7 +2,17 @@
 
 ## 目前進行中
 
-（無進行中的任務）
+### 策略重構：單根帶量 K 棒觸發（取代多根 Run 追蹤）
+
+**目標**：將現行的多根連續延伸 Run 偵測，改為單根 4h 帶量陽線觸發，簡化狀態機。
+
+**主要變更項目**：
+- [ ] `state_machine.py`：移除 Run 多根追蹤邏輯，改為單根觸發判斷
+- [ ] `state_machine.py`：廢棄條件改用實體低點（body low）
+- [ ] `state_machine.py`：Method B 改為新觸發 K 漲幅 > 前觸發 K + 1%
+- [ ] `config.py`：更新/新增相關參數常數
+- [ ] `tests/test_state_machine.py`：依新規格重寫測試
+- [ ] `CLAUDE.md`：更新策略規格說明（本次同步）
 
 ---
 
@@ -36,7 +46,7 @@ Binance WebSocket (markPrice + kline_15m/4h)
 |------|------|
 | `app/main.py` | 進入點，啟動背景任務 + Telegram polling |
 | `app/setting/config.py` | 環境變數讀取、策略參數常數 |
-| `app/setting/models.py` | 全域狀態容器（symbol_state, strategy_state, runtime_config） |
+| `app/setting/models.py` | 全域狀態容器（symbol_state, strategy_state） |
 | `app/datacenter/binance_opendata.py` | WebSocket 監聽、歷史資料載入、自動重連 |
 | `app/strategy/state_machine.py` | 策略狀態機核心（IDLE/TRACKING/READY） |
 | `app/strategy/strategy_alerts.py` | Telegram 訊號格式化與多使用者廣播 |
@@ -49,32 +59,29 @@ Binance WebSocket (markPrice + kline_15m/4h)
 
 ## 策略狀態機規格
 
-### 觸發偵測（Run 追蹤）
+### 觸發偵測（單根帶量 K 棒）
 
-**Run 偵測**
-1. 陽線（close > open）啟動 run，記錄第一根 open / low / high；同時從 `kline_4h_ohlc` 取前 `RUN_VOLUME_BASELINE_N` 根計算基準均量 `run_volume_baseline`，初始化 `run_candle_count=1`、`run_volume_sum=quote_volume`
-2. 後續每根 4h K：
-   - `high > run_high` → 延伸 run（更新 run_high），`run_candle_count += 1`，`run_volume_sum += quote_volume`
-   - `high ≤ run_high` → run 停止，**三重評估**：
-     1. 累積漲幅 = `(run_high - run_start_open) / run_start_open × 100` ≥ `PUMP_THRESHOLD`%
-     2. `run_candle_count` ≤ `RUN_MAX_CANDLES`（超過視為緩漲）
-     3. `run_volume_sum / run_candle_count` ≥ `run_volume_baseline × RUN_VOLUME_MULT`（baseline 不足時跳過此條件）
-     - 三者全部通過 → 進入 TRACKING；任一不通過 → 重置 run
-3. `consolidation_low` = run 第一根的 low（廢棄線）
-4. `consolidation_high` = run 期間最高 high
-5. `consolidation_start_ts` = 最後一次創新高的時間（16h 計時起點）
+**觸發條件**：單根 4h K 棒同時滿足以下兩條件 → IDLE 進入 TRACKING：
+1. 陽線且單根漲幅 ≥ `PUMP_THRESHOLD`%：`(close - open) / open × 100 >= PUMP_THRESHOLD`
+2. 當根量能 > 前 `TRIGGER_VOLUME_BASELINE_N` 根均量 × `TRIGGER_VOLUME_MULT`
+
+觸發後：
+- `consolidation_low` = 觸發 K 棒的 low（廢棄線）
+- `consolidation_high` = 觸發 K 棒的 high（突破目標）
+- `consolidation_start_ts` = 觸發 K 棒的 open_time（12h 計時起點）
+- `pump_candle_open/close/low/high/time` = 觸發 K 棒資訊（用於告警訊息與 Method B 比較）
 
 ### 狀態轉換
 
 ```
 IDLE
- │ 觸發：run 三重評估通過（漲幅/根數/均量），遇第一根不創新高的 K 棒
+ │ 觸發：單根 4h 陽線漲幅 >= PUMP_THRESHOLD% 且量能 > 前 N 根均量 × TRIGGER_VOLUME_MULT
  ▼
 TRACKING
- │ 廢棄：4h K low < consolidation_low → IDLE（即時掃描亦觸發）
- │ 延伸：4h K 創新高 → 更新 consolidation_high，重置 16h 計時，清空 run 量能欄位
- │ Method B：盤整內新 sub-run 三重評估通過，且起始 low > consolidation_low → 完整重置（底部上移）
- │ 進展：停止創新高後盤整 >= CONSOLIDATION_MIN_HOURS
+ │ 廢棄：4h K 實體低點 min(open,close) < consolidation_low → IDLE（即時掃描亦觸發）
+ │ 延伸：4h K high > consolidation_high → 更新 consolidation_high，重置 12h 計時
+ │ Method B：盤整內出現符合觸發條件的 K，且其漲幅 > pump_candle 漲幅 + 1% → 完整重置觸發 K
+ │ 進展：最後一次創新高後盤整 >= CONSOLIDATION_MIN_HOURS
  ▼
 READY
  │ 廢棄：同上（創新高退回 TRACKING；Method B 同樣適用）
@@ -84,22 +91,22 @@ READY
 ### 進場訊號條件
 
 **Type 1（帶量突破，做多）**
-- 15m close > `consolidation_high`
-- 15m 成交量 > 前 192 根平均 × `BREAKOUT_VOLUME_MULT`
-- 止損 = 往回掃連續放量 K 的最低 low（限當前 4h K 起點後）
+- 15m close > `consolidation_high × (1 + BREAKOUT_BODY_PCT)`（實體收超頂部 N%）
+- 15m 成交量 > 前 192 根平均 × `BREAKOUT_VOLUME_MULT`（排除當根：`kline_15m_ohlc[-193:-1]`）
+- 止損 = 往回掃連續放量 K 的最低 low（限當前 4h K 起點後，放量門檻 = 192 根均量 × `LOOKBACK_VOLUME_MULT`）
 
 ### strategy_state 欄位
 
 | 欄位 | 說明 |
 |------|------|
-| `consolidation_low` | run 第一根 low（廢棄線）；Method B 時更新 |
-| `consolidation_high` | run 期間最高點；創新高時更新 |
-| `consolidation_start_ts` | 最後一次創新高的時間（16h 起點） |
-| `run_start_open` | run 第一根 open |
-| `run_start_low` / `run_high` / `run_high_ts` | run 追蹤欄位 |
-| `run_candle_count` | run 期間已累積根數（三重評估條件②） |
-| `run_volume_sum` | run 期間 quote_volume 累積總量 |
-| `run_volume_baseline` | run 啟動時快照的前 N 根基準均量（三重評估條件③） |
+| `consolidation_low` | 觸發 K 棒的 low（廢棄線）；Method B 時更新 |
+| `consolidation_high` | 觸發 K 棒的 high；創新高時更新 |
+| `consolidation_start_ts` | 最後一次創新高的時間（12h 計時起點） |
+| `pump_candle_open` | 觸發 K 棒的 open（Method B 比較漲幅用） |
+| `pump_candle_close` | 觸發 K 棒的 close（Method B 比較漲幅用） |
+| `pump_candle_low` | 觸發 K 棒的 low（廢棄線，同 consolidation_low） |
+| `pump_candle_high` | 觸發 K 棒的 high（同 consolidation_high 初始值） |
+| `pump_candle_time` | 觸發 K 棒的 open_time（Unix 秒） |
 
 ### Candle Tuple 格式
 
@@ -113,13 +120,14 @@ READY
 
 | 參數 | 預設值 | 說明 |
 |------|--------|------|
-| `PUMP_THRESHOLD` | 8 | run 累積漲幅門檻（%） |
-| `CONSOLIDATION_MIN_HOURS` | 16 | 最低盤整時數（從最後一次創新高起算） |
-| `BREAKOUT_VOLUME_MULT` | 3 | Type 1 量能倍數（相對前 192 根平均） |
+| `PUMP_THRESHOLD` | 3 | 觸發 K 單根漲幅門檻（%）`(close-open)/open×100` |
+| `TRIGGER_VOLUME_MULT` | 3 | 觸發 K 量能倍數（相對前 N 根均量） |
+| `TRIGGER_VOLUME_BASELINE_N` | 12 | 觸發量能基準根數（前 N 根 4h K 棒） |
+| `CONSOLIDATION_MIN_HOURS` | 12 | 最低盤整時數（從最後一次創新高起算） |
+| `BREAKOUT_VOLUME_MULT` | 4.5 | Type 1 量能倍數（相對前 192 根 15m 均量） |
+| `BREAKOUT_BODY_PCT` | 0.005 | Type 1 實體超頂幅度（0.5%） |
+| `LOOKBACK_VOLUME_MULT` | 3 | Type 1 回掃止損放量門檻倍數 |
 | `STRATEGY_COOLDOWN` | 14400 | 告警冷卻秒數（4h） |
-| `RUN_MAX_CANDLES` | 6 | Run 最多允許根數（超過視為緩漲，= 1 天） |
-| `RUN_VOLUME_MULT` | 1.5 | Run 均量門檻倍數（相對前 N 根基準均量） |
-| `RUN_VOLUME_BASELINE_N` | 20 | Run 量能基準參考根數（前 N 根 4h K 棒） |
 
 ---
 
@@ -128,8 +136,9 @@ READY
 1. **WebSocket 不得阻塞**：策略函數內所有 I/O（Telegram、下單）必須用 `asyncio.create_task()`
 2. **15m 量能 baseline**：用 `kline_15m_ohlc[-193:-1]`（192 根），排除當前未收盤根
 3. **歷史回播**：啟動時 `replay_historical_4h_candles()` 恢復進行中的盤整，不需等下一根 4h K
-4. **廢棄條件即時掃描**：`scan_strategy()` 每 10 秒比對 markPrice vs consolidation_low/high
+4. **廢棄條件即時掃描**：`scan_strategy()` 每 10 秒比對 markPrice vs consolidation_low
 5. **自動下單模式**：`order_manager.py` 頂部 `USE_TESTNET`，正式上線前須改 `False`
+6. **廢棄條件用實體**：4h K 廢棄判斷以 `min(open, close)` 為準，下影線不觸發廢棄
 
 ---
 
@@ -144,8 +153,6 @@ python -m pytest tests/ -v --ignore=tests/test_ws_diag.py
 - 測試 Agent（worktree 隔離）：獨立閱讀規格 + 最終程式碼，撰寫測試後執行
 
 既有功能的回歸測試直接在主流程跑 pytest，不需獨立 Agent。
-
-**conftest.py 注意：** `_DEFAULT_RUNTIME_CONFIG` 使用保守值（`CONSOLIDATION_MIN_HOURS=12`），與正式預設值不同，為方便控制測試邊界。
 
 `tests/test_ws_diag.py` 是手動診斷工具（需真實網路），不納入自動測試。
 

@@ -15,23 +15,14 @@ def reset_global_state():
     models.symbol_state.clear()
 
 
-# ── 共用 Helper ────────────────────────────────────────────────
+# ── 基礎 Candle Helper ────────────────────────────────────────────
 
 def make_4h_candle(ts, open_, high, low, close, volume=1000.0):
     return (ts, open_, high, low, close, volume)
 
 
-def make_flat_candle(ts, low=102.0, high=109.0, open_=104.0, close=106.0, volume=1000.0):
-    """預設：(high-low)/low ≈ 6.9% < 8%，不觸發拉漲。"""
-    return (ts, open_, high, low, close, volume)
-
-
 def make_15m_candle(ts, open_=109.0, high=112.0, low=108.0, close=111.0, volume=1000.0):
     return (ts, open_, high, low, close, volume)
-
-
-def make_1h_candle(ts, open_, high, low, close):
-    return (ts, open_, high, low, close)
 
 
 def make_15m_ohlc_deque(count=200, base_volume=1000.0, base_ts=1700000000000):
@@ -43,8 +34,19 @@ def make_15m_ohlc_deque(count=200, base_volume=1000.0, base_ts=1700000000000):
     return d
 
 
+def make_trigger_candle(ts, base=100.0, gain_pct=4.0, volume=400.0):
+    """產生符合觸發條件的單根 4h K 棒（陽線，漲幅 gain_pct%，量 volume）。"""
+    open_ = base
+    close = round(open_ * (1 + gain_pct / 100), 8)
+    high  = round(close * 1.002, 8)
+    low   = round(open_ * 0.998, 8)
+    return (ts, open_, high, low, close, volume)
+
+
+# ── symbol_state 設定 ────────────────────────────────────────────
+
 def setup_symbol_state(symbol, last_price=105.0, kline_15m_ohlc=None):
-    """設定 symbol_state，填入測試所需最小欄位。"""
+    """設定 symbol_state，kline_4h_ohlc 保持空（不含基準量能）。"""
     models.symbol_state[symbol] = {
         "last_price":     last_price,
         "kline_15m_ohlc": kline_15m_ohlc if kline_15m_ohlc is not None else make_15m_ohlc_deque(),
@@ -52,79 +54,46 @@ def setup_symbol_state(symbol, last_price=105.0, kline_15m_ohlc=None):
     }
 
 
-# ── 多頭 Run 輔助 ──────────────────────────────────────────────
+def setup_with_baseline(symbol, baseline_volume=100.0, n=12, base_ts=None):
+    """設定 symbol_state，kline_4h_ohlc 填入 n 根基準 K（用於觸發量能計算）。
 
-def make_long_run(ts0, gains, base=100.0, volume=1000.0):
-    """產生連續陽線的多頭 run。
-
-    gains: 每根 K 棒的漲幅百分比清單（正數代表陽線）。
-    傳回 (candles, final_price)，其中每根 candle 的 open=前根 close，
-    high = close * 1.002，low = open * 0.998。
+    預設 n=12，對應 TRIGGER_VOLUME_BASELINE_N=12。
+    觸發 K 量能門檻 = baseline_volume × TRIGGER_VOLUME_MULT(3)。
     """
-    candles = []
-    price = base
-    for i, gain_pct in enumerate(gains):
-        open_ = price
-        close = round(open_ * (1 + gain_pct / 100), 8)
-        high  = round(max(open_, close) * 1.002, 8)
-        low   = round(min(open_, close) * 0.998, 8)
-        ts    = ts0 + i * _4H_MS
-        candles.append((ts, open_, high, low, close, volume))
-        price = close
-    return candles, price
+    if base_ts is None:
+        base_ts = 1_000_000_000_000 - n * _4H_MS
+    baseline = [
+        (base_ts + i * _4H_MS, 100.0, 100.5, 99.5, 100.0, baseline_volume)
+        for i in range(n)
+    ]
+    models.symbol_state[symbol] = {
+        "last_price":     100.0,
+        "kline_15m_ohlc": make_15m_ohlc_deque(count=200, base_volume=100.0),
+        "kline_4h_ohlc":  deque(baseline, maxlen=50),
+    }
+    return baseline
 
 
-def make_short_run(ts0, drops, base=100.0, volume=1000.0):
-    """產生連續陰線的空頭 run。
+def trigger_long_tracking(symbol, ts0, base=100.0, gain_pct=4.0, baseline_volume=100.0):
+    """建立最小多頭 TRACKING 狀態：12 根基準 K + 1 根觸發 K。
 
-    drops: 每根 K 棒的跌幅百分比清單（正數代表跌幅）。
-    傳回 (candles, final_price)。
-    """
-    candles = []
-    price = base
-    for i, drop_pct in enumerate(drops):
-        open_ = price
-        close = round(open_ * (1 - drop_pct / 100), 8)
-        high  = round(max(open_, close) * 1.002, 8)
-        low   = round(min(open_, close) * 0.998, 8)
-        ts    = ts0 + i * _4H_MS
-        candles.append((ts, open_, high, low, close, volume))
-        price = close
-    return candles, price
-
-
-def feed_long_run(symbol, ts0, gains, base=100.0):
-    """直接將多頭 run 餵入狀態機，回傳最後收盤價。"""
-    from app.strategy.state_machine import on_new_4h_candle
-    candles, final = make_long_run(ts0, gains, base)
-    for c in candles:
-        on_new_4h_candle(symbol, c)
-    return final
-
-
-def trigger_long_tracking(symbol, ts0, base=100.0, gain_pct=9.0, volume=1000.0):
-    """建立最小多頭 TRACKING 狀態：一根 gain_pct% 陽線 + 一根不創新高的中性 K 棒。
-
-    回傳 (consolidation_low, consolidation_high, ts_peak)。
+    觸發 K 量能 = baseline_volume × 4（確保 > baseline × 3 的門檻）。
+    回傳 (consolidation_low, consolidation_high, consolidation_start_ts)。
     """
     from app.strategy.state_machine import on_new_4h_candle
-    # 第一根：陽線，gain_pct%
-    open1  = base
-    close1 = round(open1 * (1 + gain_pct / 100), 8)
-    high1  = round(close1 * 1.002, 8)
-    low1   = round(open1  * 0.998, 8)
-    c1 = (ts0, open1, high1, low1, close1, volume)
-    on_new_4h_candle(symbol, c1)
 
-    # 第二根：不創新高（high < high1），觸發 run 達標 → TRACKING
-    ts1    = ts0 + _4H_MS
-    open2  = close1
-    close2 = round(open2 * 1.001, 8)       # 微陽
-    high2  = round(high1 * 0.999, 8)       # 低於 high1
-    low2   = round(open2 * 0.998, 8)
-    c2 = (ts1, open2, high2, low2, close2, volume)
-    on_new_4h_candle(symbol, c2)
+    setup_with_baseline(symbol, baseline_volume=baseline_volume)
 
-    return low1, high1, ts0 / 1000
+    trigger_vol = baseline_volume * 4   # 4 倍確保通過 > 3 倍門檻
+    open_ = base
+    close = round(open_ * (1 + gain_pct / 100), 8)
+    high  = round(close * 1.002, 8)
+    low   = round(open_ * 0.998, 8)
+    c = (ts0, open_, high, low, close, trigger_vol)
 
+    # 把觸發 K append 到 deque（模擬 live 行為：先 append 再呼叫 handler）
+    models.symbol_state[symbol]["kline_4h_ohlc"].append(c)
+    on_new_4h_candle(symbol, c)
 
+    st = models.strategy_state.get(symbol, {})
+    return st.get("consolidation_low"), st.get("consolidation_high"), st.get("consolidation_start_ts")
