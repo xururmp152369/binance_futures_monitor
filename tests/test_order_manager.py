@@ -189,3 +189,73 @@ def test_other_error_aborts_immediately():
 
     assert client.futures_create_order.call_count == 1  # 只嘗試 1 次
 
+
+# ─── 加倉例外邏輯 ──────────────────────────────────────────────────────────────
+
+def test_add_on_bypasses_limit_when_allowed():
+    """加倉：symbol 已有同方向持倉，即使達到上限仍允許開單（ADD_SAME_SYMBOL=True）。"""
+    cfg_add = {**_CFG, "ADD_SAME_SYMBOL": True, "LONG_ORDER_LIMIT": 1}
+    client = _make_client(
+        futures_position_information=AsyncMock(return_value=[
+            {"symbol": _SYMBOL, "positionAmt": "0.5"},  # 已有多單
+        ]),
+        futures_create_order=AsyncMock(
+            return_value={"avgPrice": "100.0", "orderId": 1}
+        ),
+    )
+    with patch("app.trading.order_manager.AsyncClient") as cls:
+        cls.create = AsyncMock(return_value=client)
+        ok, _ = run(_place_orders_for_user("test_account", cfg_add, _SYMBOL, _SIGNAL))
+
+    assert ok is True
+
+
+def test_add_on_blocked_when_not_allowed():
+    """加倉：symbol 已有同方向持倉，但 ADD_SAME_SYMBOL=False → 拒絕。"""
+    cfg_no_add = {**_CFG, "ADD_SAME_SYMBOL": False}
+    client = _make_client(
+        futures_position_information=AsyncMock(return_value=[
+            {"symbol": _SYMBOL, "positionAmt": "0.5"},  # 已有多單
+        ]),
+    )
+    with patch("app.trading.order_manager.AsyncClient") as cls:
+        cls.create = AsyncMock(return_value=client)
+        ok, msg = run(_place_orders_for_user("test_account", cfg_no_add, _SYMBOL, _SIGNAL))
+
+    assert ok is False
+    assert "不允許加倉" in msg
+
+
+def test_new_position_blocked_at_limit():
+    """新倉：不同 symbol 已佔滿 LONG_ORDER_LIMIT → 拒絕。"""
+    cfg_limit = {**_CFG, "LONG_ORDER_LIMIT": 1}
+    client = _make_client(
+        futures_position_information=AsyncMock(return_value=[
+            {"symbol": "ETHUSDT", "positionAmt": "1.0"},  # 不同 symbol 的多單
+        ]),
+    )
+    with patch("app.trading.order_manager.AsyncClient") as cls:
+        cls.create = AsyncMock(return_value=client)
+        ok, msg = run(_place_orders_for_user("test_account", cfg_limit, _SYMBOL, _SIGNAL))
+
+    assert ok is False
+    assert "已達上限" in msg
+
+
+def test_opposite_direction_does_not_count_as_add_on():
+    """反向持倉不算加倉：symbol 已有空單，此次開多單 → 應走新倉邏輯（上限未達則允許）。"""
+    cfg = {**_CFG, "LONG_ORDER_LIMIT": 3}
+    client = _make_client(
+        futures_position_information=AsyncMock(return_value=[
+            {"symbol": _SYMBOL, "positionAmt": "-0.5"},  # 已有空單
+        ]),
+        futures_create_order=AsyncMock(
+            return_value={"avgPrice": "100.0", "orderId": 1}
+        ),
+    )
+    with patch("app.trading.order_manager.AsyncClient") as cls:
+        cls.create = AsyncMock(return_value=client)
+        ok, _ = run(_place_orders_for_user("test_account", cfg, _SYMBOL, _SIGNAL))
+
+    assert ok is True  # 多單上限未達（0/3），應允許開倉
+

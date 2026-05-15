@@ -85,7 +85,6 @@ async def _place_orders_for_user(
 
         # 部位上限 & 加倉檢查（多空分開計算）
         open_positions = await _get_open_positions(client)
-        open_symbols   = {p["symbol"] for p in open_positions}
 
         is_short = signal_type in ("TYPE1_SHORT",)
         if is_short:
@@ -97,15 +96,21 @@ async def _place_orders_for_user(
             order_limit    = cfg["LONG_ORDER_LIMIT"]
             side_label     = "多單"
 
-        if len(side_positions) >= order_limit:
-            msg = f"{side_label}部位已達上限（{len(side_positions)}/{order_limit}），略過 {symbol}"
-            log.info(f"[自動開單] {msg} ({account_name})")
-            return (False, msg)
+        # 判斷是否為加倉（該 symbol 已有同方向持倉）
+        is_add_on = any(p["symbol"] == symbol for p in side_positions)
 
-        if symbol in open_symbols and not cfg.get("ADD_SAME_SYMBOL", False):
-            msg = f"{symbol} 已有持倉，且設定不允許加倉"
-            log.info(f"[自動開單] {msg} ({account_name})")
-            return (False, msg)
+        if is_add_on:
+            # 加倉：跳過持倉上限，但需確認設定允許加倉
+            if not cfg.get("ADD_SAME_SYMBOL", False):
+                msg = f"{symbol} 已有{side_label}持倉，且設定不允許加倉"
+                log.info(f"[自動開單] {msg} ({account_name})")
+                return (False, msg)
+        else:
+            # 新倉：檢查持倉上限
+            if len(side_positions) >= order_limit:
+                msg = f"{side_label}部位已達上限（{len(side_positions)}/{order_limit}），略過 {symbol}"
+                log.info(f"[自動開單] {msg} ({account_name})")
+                return (False, msg)
 
         # 設定保證金模式（逐倉 ISOLATED / 全倉 CROSSED，預設全倉）
         margin_type = cfg.get("MARGIN_TYPE", "CROSSED").upper()
@@ -122,7 +127,7 @@ async def _place_orders_for_user(
         log.info(f"[自動開單] {symbol} 槓桿設為 {leverage}x")
 
         # 無現有持倉才清除殘留條件單（加倉時保留原有 SL/TP，不中斷保護）
-        if symbol not in open_symbols:
+        if not is_add_on:
             try:
                 await client.futures_cancel_all_algo_open_orders(symbol=symbol)
                 log.info(f"[自動開單] {symbol} 已清除舊條件單")
