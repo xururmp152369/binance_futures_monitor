@@ -1,7 +1,7 @@
 from collections import defaultdict, deque
 from .config import (
     PUMP_THRESHOLD, CONSOLIDATION_MIN_HOURS, BREAKOUT_VOLUME_MULT, LOOKBACK_VOLUME_MULT,
-    EMA_TOUCH_THRESHOLD, WICK_THRESHOLD, STRATEGY_RR_MIN, STRATEGY_COOLDOWN,
+    STRATEGY_COOLDOWN,
     QUOTE_VOLUME,
     RUN_MAX_CANDLES, RUN_VOLUME_MULT, RUN_VOLUME_BASELINE_N,
 )
@@ -25,8 +25,7 @@ price_history = defaultdict(lambda: deque(maxlen=100))
 bot = None
 
 # ================== 策略狀態 ==================
-strategy_state       = {}  # symbol → 多頭策略狀態 dict（由 state_machine 管理）
-strategy_state_short = {}  # symbol → 空頭策略狀態 dict（由 state_machine 管理）
+strategy_state = {}  # symbol → 策略狀態 dict（由 state_machine 管理）
 
 # ================== 執行期可調整參數 ==================
 # 從 config.py 初始化；可透過 /config set PARAM VALUE 動態修改，重啟後還原預設值
@@ -38,9 +37,6 @@ runtime_config: dict = {
     "CONSOLIDATION_MIN_HOURS": CONSOLIDATION_MIN_HOURS,  # 最低盤整時數 (h)
     "BREAKOUT_VOLUME_MULT":    BREAKOUT_VOLUME_MULT,     # Type1 突破量能倍數
     "LOOKBACK_VOLUME_MULT":    LOOKBACK_VOLUME_MULT,     # Type1 回推放量序列門檻
-    "EMA_TOUCH_THRESHOLD":     EMA_TOUCH_THRESHOLD,      # Type2 EMA 觸碰容忍 (%)
-    "WICK_THRESHOLD":          WICK_THRESHOLD,           # Type2 有效收針 (%)
-    "STRATEGY_RR_MIN":         STRATEGY_RR_MIN,          # Type2 最低盈虧比
     "STRATEGY_COOLDOWN":       STRATEGY_COOLDOWN,        # 策略告警冷卻 (秒)
     "RUN_MAX_CANDLES":         RUN_MAX_CANDLES,          # Run 最多允許根數
     "RUN_VOLUME_MULT":         RUN_VOLUME_MULT,          # Run 均量門檻倍數

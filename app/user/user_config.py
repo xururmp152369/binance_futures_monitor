@@ -165,11 +165,9 @@ def get_user_config(account_name: str) -> dict | None:
         cfg = json.loads(_get_fernet().decrypt(p.read_bytes()).decode("utf-8"))
     except Exception:
         return None
-    # 舊設定 ORDER_LIMIT → LONG/SHORT_ORDER_LIMIT 自動 migration
+    # 舊設定 ORDER_LIMIT → LONG_ORDER_LIMIT 自動 migration
     if "ORDER_LIMIT" in cfg and "LONG_ORDER_LIMIT" not in cfg:
-        old_limit = cfg.pop("ORDER_LIMIT")
-        cfg["LONG_ORDER_LIMIT"]  = old_limit
-        cfg["SHORT_ORDER_LIMIT"] = old_limit
+        cfg["LONG_ORDER_LIMIT"] = cfg.pop("ORDER_LIMIT")
         save_user_config(account_name, cfg)
     return cfg
 
@@ -270,7 +268,7 @@ async def check_expired_sessions(bot) -> None:
 
 # ─── 設定範本 ─────────────────────────────────────────────────────────────────
 
-_VALID_STRATEGIES = {"TYPE1", "TYPE2", "TYPE1_SHORT"}
+_VALID_STRATEGIES = {"TYPE1"}
 
 CONFIG_TEMPLATE_TEXT = """\
 📋 *個人設定說明*
@@ -281,20 +279,17 @@ CONFIG_TEMPLATE_TEXT = """\
 • `API_KEY` / `SECRET_KEY`：模擬帳戶（Testnet）API 金鑰
 • `PRD_API_KEY` / `PRD_SECRET_KEY`：正式帳戶 API 金鑰（ORDER\\_MODE=PRD 時必填）
 • `ORDER_MODE`：下單環境，`"DEV"`（模擬，預設）或 `"PRD"`（正式）
-• `STRATEGY`：觸發自動開單的策略，可填 "TYPE1"（帶量突破多頭）、"TYPE1\\_SHORT"（帶量跌破空頭）、"TYPE2"（均線反彈），可多選
+• `STRATEGY`：觸發自動開單的策略，目前支援 `"TYPE1"`（帶量突破多頭）
 • `RISK_TYPE`：風險計算方式
   ‣ `0`：固定投入金額（RISK\\_AMOUNT × 槓桿 USDT）
   ‣ `1`：固定損失金額（依止損比例換算手數）
 • `RISK_AMOUNT`：投入或損失金額（USDT）
 • `RISK_LEVERAGE`：槓桿倍數
 • `MARGIN_TYPE`：保證金模式，`"CROSSED"`（全倉）或 `"ISOLATED"`（逐倉）
-• `TP_STRATEGY`：多頭止盈策略，至少 1 組、至多 3 組，PERCENT 總計不超過 100
+• `TP_STRATEGY`：止盈策略，至少 1 組、至多 3 組，PERCENT 總計不超過 100
   ‣ `RR_RATIO`：止盈盈虧比（1 = 1R，1.5 = 1.5R）
   ‣ `PERCENT`：達到該盈虧比時平倉的部位比例 (%)，最後一組會自動全數平倉
-• `TP_STRATEGY_SHORT`：空頭止盈策略（選填），格式同上。不填則沿用 `TP_STRATEGY`
-  ‣ 下跌行情達到止盈較難，建議設比多頭更保守的盈虧比（如 1R 而非 1.5R）
 • `LONG_ORDER_LIMIT`：同時持有多單部位數上限
-• `SHORT_ORDER_LIMIT`：同時持有空單部位數上限
 • `ADD_SAME_SYMBOL`：同幣種已有倉位時，是否再次開單（加倉）
 • `SYMBOL_BLACKLIST`：不自動開單的幣種清單，空陣列表示不限制
 • `ENABLED`：是否啟用自動開單
@@ -306,7 +301,7 @@ CONFIG_TEMPLATE_TEXT = """\
     "PRD_API_KEY": "",
     "PRD_SECRET_KEY": "",
     "ORDER_MODE": "DEV",
-    "STRATEGY": ["TYPE1", "TYPE1_SHORT", "TYPE2"],
+    "STRATEGY": ["TYPE1"],
     "RISK_TYPE": 0,
     "RISK_AMOUNT": 0.1,
     "RISK_LEVERAGE": 20,
@@ -314,11 +309,7 @@ CONFIG_TEMPLATE_TEXT = """\
     "TP_STRATEGY": [
         { "RR_RATIO": 1.5, "PERCENT": 50 }
     ],
-    "TP_STRATEGY_SHORT": [
-        { "RR_RATIO": 1.0, "PERCENT": 50 }
-    ],
     "LONG_ORDER_LIMIT": 10,
-    "SHORT_ORDER_LIMIT": 10,
     "ADD_SAME_SYMBOL": false,
     "SYMBOL_BLACKLIST": [],
     "ENABLED": true
@@ -345,9 +336,9 @@ def validate_config(data: dict) -> tuple[bool, list[str]]:
 
     strategy = data.get("STRATEGY")
     if not isinstance(strategy, list) or not strategy:
-        errors.append("`STRATEGY` 必須為非空陣列，如 [\"TYPE1\", \"TYPE2\", \"TYPE1_SHORT\"]")
+        errors.append("`STRATEGY` 必須為非空陣列，如 [\"TYPE1\"]")
     elif invalid := set(strategy) - _VALID_STRATEGIES:
-        errors.append(f"`STRATEGY` 包含無效值：{sorted(invalid)}，只接受 TYPE1 / TYPE2 / TYPE1_SHORT")
+        errors.append(f"`STRATEGY` 包含無效值：{sorted(invalid)}，只接受 TYPE1")
 
     if data.get("RISK_TYPE") not in (0, 1):
         errors.append("`RISK_TYPE` 必須為 0（固定金額）或 1（固定損失）")
@@ -390,15 +381,9 @@ def validate_config(data: dict) -> tuple[bool, list[str]]:
     else:
         _validate_tp("TP_STRATEGY")
 
-    _validate_tp("TP_STRATEGY_SHORT")
-
     long_order_limit = data.get("LONG_ORDER_LIMIT")
     if not isinstance(long_order_limit, int) or long_order_limit <= 0:
         errors.append("`LONG_ORDER_LIMIT` 必須為正整數")
-
-    short_order_limit = data.get("SHORT_ORDER_LIMIT")
-    if not isinstance(short_order_limit, int) or short_order_limit <= 0:
-        errors.append("`SHORT_ORDER_LIMIT` 必須為正整數")
 
     if not isinstance(data.get("ADD_SAME_SYMBOL"), bool):
         errors.append("`ADD_SAME_SYMBOL` 必須為 true 或 false")

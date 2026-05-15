@@ -1,16 +1,13 @@
 import asyncio
 import time
-import talib
-import numpy as np
 from binance import BinanceSocketManager
 from ..setting.config import EXCLUDE_SYMBOLS, BATCH_SIZE
 from ..setting.models import symbol_state, running, price_history, strategy_state, runtime_config
 from ..extension.utils import setup_logging
 from collections import deque
 from ..strategy.state_machine import (
-    on_new_4h_candle, on_new_4h_candle_short,
-    on_new_1h_candle,
-    on_new_15m_candle, on_new_15m_candle_short,
+    on_new_4h_candle,
+    on_new_15m_candle,
     replay_historical_4h_candles,
 )
 from ..strategy.strategy_alerts import send_strategy_alert, send_order_results
@@ -56,27 +53,13 @@ async def _fetch_klines(client, symbol: str, interval: str, limit: int, max_retr
     return []
 
 
-async def load_historical_klines(client, symbol: str, interval: str, limit: int = 100) -> tuple[list, dict]:
-    """載入歷史收盤價並計算 EMA(15/30/45/60)。"""
-    klines = await _fetch_klines(client, symbol, interval, limit)
-    closes = [float(k[4]) for k in klines]
-    emas = {p: None for p in (15, 30, 45, 60)}
-    if len(closes) >= 60:
-        a = np.array(closes)
-        emas = {p: talib.EMA(a, timeperiod=p)[-1] for p in (15, 30, 45, 60)}
-    return closes, emas
-
-
 async def load_historical_klines_ohlc(client, symbol: str, interval: str, limit: int = 100) -> list:
     """載入歷史 OHLC 供策略狀態機使用。
 
-    4h/1h → [(open_time_ms, open, high, low, close), ...]
-    15m   → [(open_time_ms, open, high, low, close, quote_volume), ...]
+    4h/15m → [(open_time_ms, open, high, low, close, quote_volume), ...]
     """
     klines = await _fetch_klines(client, symbol, interval, limit)
-    if interval in ("15m", "4h"):
-        return [(int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[7])) for k in klines]
-    return [(int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4])) for k in klines]
+    return [(int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[7])) for k in klines]
 
 async def load_historical_data_batch(client, symbols):
     """批次載入新幣種的歷史資料。
@@ -110,34 +93,10 @@ async def load_historical_data_batch(client, symbols):
         async def load_symbol_data(symbol):
             async with hist_semaphore:
                 try:
-                    # 載入 1 小時 K 線
-                    closes_1h, emas_1h = await load_historical_klines(client, symbol, "1h", 100)
-                    if closes_1h:
-                        symbol_state[symbol]["kline_1h_closes"].extend(closes_1h)
-                        symbol_state[symbol]["ema_1h"] = emas_1h
-                    
-                    # API 呼叫間隔
-                    await asyncio.sleep(0.5)
-                    
-                    # 載入 4 小時 K 線
-                    closes_4h, emas_4h = await load_historical_klines(client, symbol, "4h", 100)
-                    if closes_4h:
-                        symbol_state[symbol]["kline_4h_closes"].extend(closes_4h)
-                        symbol_state[symbol]["ema_4h"] = emas_4h
-                    
-                    # API 呼叫間隔
-                    await asyncio.sleep(0.5)
-                    
-                    # 載入策略用 OHLC（4h / 1h / 15m）
+                    # 載入策略用 OHLC（4h / 15m）
                     ohlc_4h = await load_historical_klines_ohlc(client, symbol, "4h", 50)
                     if ohlc_4h:
                         symbol_state[symbol]["kline_4h_ohlc"].extend(ohlc_4h)
-
-                    await asyncio.sleep(0.5)
-
-                    ohlc_1h = await load_historical_klines_ohlc(client, symbol, "1h", 100)
-                    if ohlc_1h:
-                        symbol_state[symbol]["kline_1h_ohlc"].extend(ohlc_1h)
 
                     await asyncio.sleep(0.5)
 
@@ -195,12 +154,7 @@ async def initialize_symbols(client):
                     "last_price": None,
                     "funding_rate": 0.0,
                     "last_kline_close_time_15m": 0,
-                    "kline_1h_closes": deque(maxlen=100),
-                    "ema_1h": {15: None, 30: None, 45: None, 60: None},
-                    "kline_4h_closes": deque(maxlen=100),
-                    "ema_4h": {15: None, 30: None, 45: None, 60: None},
                     "kline_4h_ohlc":  deque(maxlen=50),
-                    "kline_1h_ohlc":  deque(maxlen=100),
                     "kline_15m_ohlc": deque(maxlen=200),
                 }
                 new_symbols.append(s)
@@ -224,15 +178,6 @@ async def initialize_symbols(client):
         log.error(f"初始化幣種失敗: {e}")
 
 # ================== WebSocket Stream 處理函式 ==================
-
-def _update_kline_ema(state: dict, closes_key: str, ema_key: str, close_price: float) -> None:
-    """將新收盤價加入序列並重新計算 EMA(15/30/45/60)。"""
-    state[closes_key].append(close_price)
-    closes = np.array(state[closes_key])
-    if len(closes) >= 60:
-        for p in (15, 30, 45, 60):
-            state[ema_key][p] = talib.EMA(closes, timeperiod=p)[-1]
-
 
 def _handle_mark_price(data: dict) -> None:
     """更新即時價格、資金費率與 price_history。"""
@@ -265,32 +210,15 @@ def _handle_kline_15m(data: dict) -> tuple | None:
 
 
 def _handle_kline_4h(data: dict) -> None:
-    """收盤 4h K 棒：更新 EMA、存 OHLC、驅動策略狀態機。"""
+    """收盤 4h K 棒：存 OHLC、驅動策略狀態機。"""
     k   = data["k"]
     sym = k["s"]
     if sym not in symbol_state or not k["x"]:
         return
-    close_price = float(k["c"])
-    state       = symbol_state[sym]
-    _update_kline_ema(state, "kline_4h_closes", "ema_4h", close_price)
-    candle = (int(k["t"]), float(k["o"]), float(k["h"]), float(k["l"]), close_price, float(k["q"]))
+    state  = symbol_state[sym]
+    candle = (int(k["t"]), float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]), float(k["q"]))
     state["kline_4h_ohlc"].append(candle)
     on_new_4h_candle(sym, candle)
-    on_new_4h_candle_short(sym, candle)
-
-
-def _handle_kline_1h(data: dict) -> tuple | None:
-    """收盤 1h K 棒：更新 EMA、存 OHLC。回傳 (sym, candle) 或 None。"""
-    k   = data["k"]
-    sym = k["s"]
-    if sym not in symbol_state or not k["x"]:
-        return None
-    close_price = float(k["c"])
-    state       = symbol_state[sym]
-    _update_kline_ema(state, "kline_1h_closes", "ema_1h", close_price)
-    candle = (int(k["t"]), float(k["o"]), float(k["h"]), float(k["l"]), close_price)
-    state["kline_1h_ohlc"].append(candle)
-    return sym, candle
 
 
 # ================== 合約幣對 價格K棒監控 ==================
@@ -301,8 +229,7 @@ async def handle_price_websocket(client, batch_symbols):
     訂閱 stream：
     - markPrice：更新最新價格、資金費率、並寫入 price_history
     - kline_15m：K 線收盤後儲存 OHLC，觸發 Type1 突破檢查
-    - kline_1h：K 線收盤後更新 EMA，觸發 Type2 均線反彈檢查
-    - kline_4h：K 線收盤後更新 EMA，驅動策略狀態機
+    - kline_4h：K 線收盤後儲存 OHLC，驅動策略狀態機
 
     斷線後（Binance 每 24h 關閉、網路中斷）會自動重連，直到 running=False 為止。
     """
@@ -311,7 +238,6 @@ async def handle_price_websocket(client, batch_symbols):
         s = sym.lower()
         streams.append(f"{s}@markPrice")
         streams.append(f"{s}@kline_15m")
-        streams.append(f"{s}@kline_1h")
         streams.append(f"{s}@kline_4h")
 
     reconnect_delay = 5  # 初始重連等待秒數
@@ -346,22 +272,10 @@ async def handle_price_websocket(client, batch_symbols):
                                 signal = on_new_15m_candle(sym, candle)
                                 if signal:
                                     asyncio.create_task(_fire_signal(sym, signal))
-                                signal_short = on_new_15m_candle_short(sym, candle)
-                                if signal_short:
-                                    asyncio.create_task(_fire_signal(sym, signal_short))
 
                         elif stream_name.endswith("@kline_4h"):
                             last_symbol, last_interval = data["k"]["s"], "4h"
                             _handle_kline_4h(data)
-
-                        elif stream_name.endswith("@kline_1h"):
-                            last_symbol, last_interval = data["k"]["s"], "1h"
-                            result = _handle_kline_1h(data)
-                            if result:
-                                sym, candle = result
-                                signal = on_new_1h_candle(sym, candle)
-                                if signal:
-                                    asyncio.create_task(_fire_signal(sym, signal))
 
                     except asyncio.CancelledError:
                         log.info(f"批次 WebSocket 收到取消信號 | batch_symbols={batch_symbols[:3]}...")

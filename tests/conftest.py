@@ -7,9 +7,6 @@ _DEFAULT_RUNTIME_CONFIG = {
     "CONSOLIDATION_MIN_HOURS": 12,
     "BREAKOUT_VOLUME_MULT":    3,
     "LOOKBACK_VOLUME_MULT":    2.5,
-    "EMA_TOUCH_THRESHOLD":     0.5,
-    "WICK_THRESHOLD":          2,
-    "STRATEGY_RR_MIN":         1.0,
     "STRATEGY_COOLDOWN":       14400,
     "RUN_MAX_CANDLES":         6,
     "RUN_VOLUME_MULT":         1.5,
@@ -23,12 +20,10 @@ _4H_MS = 4 * 3600 * 1000
 def reset_global_state():
     """每個測試前後清空全域狀態，並還原 runtime_config 為預設值。"""
     models.strategy_state.clear()
-    models.strategy_state_short.clear()
     models.symbol_state.clear()
     models.runtime_config.update(_DEFAULT_RUNTIME_CONFIG)
     yield
     models.strategy_state.clear()
-    models.strategy_state_short.clear()
     models.symbol_state.clear()
 
 
@@ -60,13 +55,11 @@ def make_15m_ohlc_deque(count=200, base_volume=1000.0, base_ts=1700000000000):
     return d
 
 
-def setup_symbol_state(symbol, ema_4h=None, last_price=105.0, kline_15m_ohlc=None):
+def setup_symbol_state(symbol, last_price=105.0, kline_15m_ohlc=None):
     """設定 symbol_state，填入測試所需最小欄位。"""
     models.symbol_state[symbol] = {
-        "ema_4h":         ema_4h or {},
         "last_price":     last_price,
         "kline_15m_ohlc": kline_15m_ohlc if kline_15m_ohlc is not None else make_15m_ohlc_deque(),
-        "kline_1h_ohlc":  deque(maxlen=100),
         "kline_4h_ohlc":  deque(maxlen=50),
     }
 
@@ -121,15 +114,6 @@ def feed_long_run(symbol, ts0, gains, base=100.0):
     return final
 
 
-def feed_short_run(symbol, ts0, drops, base=100.0):
-    """直接將空頭 run 餵入狀態機，回傳最後收盤價。"""
-    from app.strategy.state_machine import on_new_4h_candle_short
-    candles, final = make_short_run(ts0, drops, base)
-    for c in candles:
-        on_new_4h_candle_short(symbol, c)
-    return final
-
-
 def trigger_long_tracking(symbol, ts0, base=100.0, gain_pct=9.0, volume=1000.0):
     """建立最小多頭 TRACKING 狀態：一根 gain_pct% 陽線 + 一根不創新高的中性 K 棒。
 
@@ -156,27 +140,3 @@ def trigger_long_tracking(symbol, ts0, base=100.0, gain_pct=9.0, volume=1000.0):
     return low1, high1, ts0 / 1000
 
 
-def trigger_short_tracking(symbol, ts0, base=100.0, drop_pct=9.0, volume=1000.0):
-    """建立最小空頭 TRACKING 狀態：一根 drop_pct% 陰線 + 一根不創新低的中性 K 棒。
-
-    回傳 (consolidation_high, consolidation_low, ts_peak)。
-    """
-    from app.strategy.state_machine import on_new_4h_candle_short
-    # 第一根：陰線，drop_pct%
-    open1  = base
-    close1 = round(open1 * (1 - drop_pct / 100), 8)
-    high1  = round(open1  * 1.002, 8)
-    low1   = round(close1 * 0.998, 8)
-    c1 = (ts0, open1, high1, low1, close1, volume)
-    on_new_4h_candle_short(symbol, c1)
-
-    # 第二根：不創新低（low > low1），觸發 run 達標 → TRACKING
-    ts1    = ts0 + _4H_MS
-    open2  = close1
-    close2 = round(open2 * 0.999, 8)       # 微陰
-    low2   = round(low1  * 1.001, 8)       # 高於 low1
-    high2  = round(open2 * 1.002, 8)
-    c2 = (ts1, open2, high2, low2, close2, volume)
-    on_new_4h_candle_short(symbol, c2)
-
-    return high1, low1, ts0 / 1000

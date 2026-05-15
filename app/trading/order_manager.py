@@ -83,18 +83,11 @@ async def _place_orders_for_user(
         )
         log.info(f"[自動開單] {symbol} 模式={'正式' if use_prd else '模擬'} ({account_name})")
 
-        # 部位上限 & 加倉檢查（多空分開計算）
+        # 部位上限 & 加倉檢查
         open_positions = await _get_open_positions(client)
-
-        is_short = signal_type in ("TYPE1_SHORT",)
-        if is_short:
-            side_positions = [p for p in open_positions if float(p.get("positionAmt", 0)) < 0]
-            order_limit    = cfg["SHORT_ORDER_LIMIT"]
-            side_label     = "空單"
-        else:
-            side_positions = [p for p in open_positions if float(p.get("positionAmt", 0)) > 0]
-            order_limit    = cfg["LONG_ORDER_LIMIT"]
-            side_label     = "多單"
+        side_positions = [p for p in open_positions if float(p.get("positionAmt", 0)) > 0]
+        order_limit    = cfg["LONG_ORDER_LIMIT"]
+        side_label     = "多單"
 
         # 判斷是否為加倉（該 symbol 已有同方向持倉）
         is_add_on = any(p["symbol"] == symbol for p in side_positions)
@@ -134,11 +127,9 @@ async def _place_orders_for_user(
             except Exception as e:
                 log.warning(f"[自動開單] {symbol} 清除舊條件單失敗（忽略）: {e}")
 
-        # 方向設定（多頭 BUY / 空頭 SELL）
-        is_short      = signal["type"] == "type1_short"
-        entry_side    = "SELL" if is_short else "BUY"
-        exit_side     = "BUY"  if is_short else "SELL"
-        direction_str = "空頭" if is_short else "多頭"
+        entry_side    = "BUY"
+        exit_side     = "SELL"
+        direction_str = "多頭"
 
         # 計算下單量
         entry_price                   = signal["close"]
@@ -230,19 +221,13 @@ async def _place_orders_for_user(
             log.error(f"[自動開單] {symbol} 止損掛出失敗: {e} ({account_name})")
             warnings.append(f"⚠️ 止損設置失敗，請手動設置\n{e}")
 
-        # 止盈單（分批）：空頭優先用 TP_STRATEGY_SHORT，fallback 到 TP_STRATEGY
-        tp_strategy = (
-            cfg.get("TP_STRATEGY_SHORT") or cfg.get("TP_STRATEGY", [])
-            if is_short
-            else cfg.get("TP_STRATEGY", [])
-        )
+        tp_strategy = cfg.get("TP_STRATEGY", [])
         last_idx  = len(tp_strategy) - 1
         tp_failed = False
         for i, tp_entry in enumerate(tp_strategy):
             rr      = tp_entry["RR_RATIO"]
             pct     = tp_entry["PERCENT"]
-            # 多頭 TP 在上方；空頭 TP 在下方
-            tp_price = fill_price + sl_dist * rr if not is_short else fill_price - sl_dist * rr
+            tp_price = fill_price + sl_dist * rr
             is_last  = (i == last_idx)
 
             try:

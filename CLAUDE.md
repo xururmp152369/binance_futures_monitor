@@ -2,24 +2,23 @@
 
 ## 目前進行中
 
-- ✅ **Run 期間帶量驗證（方案 A）**：4h run 進入 TRACKING 需同時通過三重條件（累積漲跌幅、根數上限、均量門檻），多空對稱。
+（無進行中的任務）
 
 ---
 
 ## 專案概覽
 
-自動化監控 Binance 永續合約，偵測「4h 拉漲後盤整突破 / 均線反彈」進場機會，透過 Telegram Bot 發訊號並支援自動下單。監控全 USDT 合約，運行於本機 Docker。
+自動化監控 Binance 永續合約，偵測「4h 拉漲後盤整突破」進場機會，透過 Telegram Bot 發訊號並支援自動下單。監控全 USDT 合約，運行於本機 Docker。
 
 ---
 
 ## 架構與資料流
 
 ```
-Binance WebSocket (markPrice + kline_15m/1h/4h)
+Binance WebSocket (markPrice + kline_15m/4h)
         │
         ├─ markPrice → _handle_mark_price() → 更新 last_price
         ├─ 15m 收盤  → on_new_15m_candle()  → Type 1 突破訊號
-        ├─ 1h  收盤  → on_new_1h_candle()   → Type 2 反彈訊號
         └─ 4h  收盤  → on_new_4h_candle()   → 狀態機轉換
                               │
                   strategy/state_machine.py  IDLE → TRACKING → READY
@@ -52,11 +51,11 @@ Binance WebSocket (markPrice + kline_15m/1h/4h)
 
 ### 觸發偵測（Run 追蹤）
 
-**多頭 Run**
+**Run 偵測**
 1. 陽線（close > open）啟動 run，記錄第一根 open / low / high；同時從 `kline_4h_ohlc` 取前 `RUN_VOLUME_BASELINE_N` 根計算基準均量 `run_volume_baseline`，初始化 `run_candle_count=1`、`run_volume_sum=quote_volume`
 2. 後續每根 4h K：
    - `high > run_high` → 延伸 run（更新 run_high），`run_candle_count += 1`，`run_volume_sum += quote_volume`
-   - `high ≤ run_high` → run 停止，**三重評估**（多空相同）：
+   - `high ≤ run_high` → run 停止，**三重評估**：
      1. 累積漲幅 = `(run_high - run_start_open) / run_start_open × 100` ≥ `PUMP_THRESHOLD`%
      2. `run_candle_count` ≤ `RUN_MAX_CANDLES`（超過視為緩漲）
      3. `run_volume_sum / run_candle_count` ≥ `run_volume_baseline × RUN_VOLUME_MULT`（baseline 不足時跳過此條件）
@@ -65,15 +64,8 @@ Binance WebSocket (markPrice + kline_15m/1h/4h)
 4. `consolidation_high` = run 期間最高 high
 5. `consolidation_start_ts` = 最後一次創新高的時間（16h 計時起點）
 
-**空頭 Run（完全對稱）**
-1. 陰線啟動 run；同步初始化 `run_volume_baseline`、`run_candle_count`、`run_volume_sum`
-2. `low < run_low` → 延伸並累積量能；`low ≥ run_low` → 停止，走同一套三重評估（跌幅、根數、均量）
-3. `consolidation_high` = run 第一根的 high（廢棄線）
-4. `consolidation_low` = run 期間最低 low
-
 ### 狀態轉換
 
-**多頭（strategy_state）**
 ```
 IDLE
  │ 觸發：run 三重評估通過（漲幅/根數/均量），遇第一根不創新高的 K 棒
@@ -86,23 +78,7 @@ TRACKING
  ▼
 READY
  │ 廢棄：同上（創新高退回 TRACKING；Method B 同樣適用）
- ├─ 每根 15m 收盤 → Type 1 帶量突破（做多）
- └─ 每根 1h  收盤 → Type 2 均線反彈（做多）
-```
-
-**空頭（strategy_state_short）**
-```
-IDLE
- │ 觸發：run 三重評估通過（跌幅/根數/均量），遇第一根不創新低的 K 棒
- ▼
-TRACKING
- │ 廢棄：4h K high > consolidation_high → IDLE
- │ 延伸：4h K 創新低 → 更新 consolidation_low，重置計時，清空 run 量能欄位
- │ Method B：新 sub-run 三重評估通過，且起始 high < consolidation_high → 完整重置（頂部下移）
- │ 進展：停止創新低後盤整 >= CONSOLIDATION_MIN_HOURS
- ▼
-READY
- └─ 每根 15m 收盤 → Type 1 Short 帶量跌破（做空）
+ └─ 每根 15m 收盤 → Type 1 帶量突破（做多）
 ```
 
 ### 進場訊號條件
@@ -112,35 +88,22 @@ READY
 - 15m 成交量 > 前 192 根平均 × `BREAKOUT_VOLUME_MULT`
 - 止損 = 往回掃連續放量 K 的最低 low（限當前 4h K 起點後）
 
-**Type 1 Short（帶量跌破，做空）**
-- 15m close < `consolidation_low`
-- 15m 成交量 > 前 192 根平均 × `BREAKOUT_VOLUME_MULT`
-- 止損 = 往回掃連續放量 K 的最高 high（限當前 4h K 起點後）
+### strategy_state 欄位
 
-**Type 2（均線反彈，做多）**
-- 1h 最低 ≤ 任一 4h EMA（15/30/45/60） × (1 + `EMA_TOUCH_THRESHOLD`/100)
-- 開盤 > 觸碰的 EMA；close > low × (1 + `WICK_THRESHOLD`/100)
-- 盈虧比 = (consolidation_high - close) / (close - consolidation_low) ≥ `STRATEGY_RR_MIN`
-- 止損 = `consolidation_low`
-
-### strategy_state 欄位（多頭/空頭共用，語意對調）
-
-| 欄位 | 多頭 | 空頭 |
-|------|------|------|
-| `consolidation_low` | run 第一根 low（廢棄線）；Method B 時更新 | run 最低點；創新低時更新 |
-| `consolidation_high` | run 最高點；創新高時更新 | run 第一根 high（廢棄線）；Method B 時更新 |
-| `consolidation_start_ts` | 最後一次創新高的時間（16h 起點） | 最後一次創新低的時間 |
-| `run_start_open` | run 第一根 open | 同左 |
-| `run_start_low` / `run_high` / `run_high_ts` | 多頭 run 追蹤 | 不使用 |
-| `run_start_high` / `run_low` / `run_low_ts` | 不使用 | 空頭 run 追蹤 |
-| `run_candle_count` | run 期間已累積根數（三重評估條件②） | 同左 |
-| `run_volume_sum` | run 期間 quote_volume 累積總量 | 同左 |
-| `run_volume_baseline` | run 啟動時快照的前 N 根基準均量（三重評估條件③） | 同左 |
+| 欄位 | 說明 |
+|------|------|
+| `consolidation_low` | run 第一根 low（廢棄線）；Method B 時更新 |
+| `consolidation_high` | run 期間最高點；創新高時更新 |
+| `consolidation_start_ts` | 最後一次創新高的時間（16h 起點） |
+| `run_start_open` | run 第一根 open |
+| `run_start_low` / `run_high` / `run_high_ts` | run 追蹤欄位 |
+| `run_candle_count` | run 期間已累積根數（三重評估條件②） |
+| `run_volume_sum` | run 期間 quote_volume 累積總量 |
+| `run_volume_baseline` | run 啟動時快照的前 N 根基準均量（三重評估條件③） |
 
 ### Candle Tuple 格式
 
 - 4h：`(open_time_ms, open, high, low, close, quote_volume)`
-- 1h：`(open_time_ms, open, high, low, close)`
 - 15m：`(open_time_ms, open, high, low, close, quote_volume)`
 - 時間欄位必須用 `k["t"]`（open_time_ms），不得用 `k["T"]`（close_time_ms）
 
@@ -150,20 +113,13 @@ READY
 
 | 參數 | 預設值 | 說明 |
 |------|--------|------|
-| `PUMP_THRESHOLD` | 8 | run 累積漲跌幅門檻（%） |
-| `CONSOLIDATION_MIN_HOURS` | 16 | 最低盤整時數（從最後一次創新高/低起算） |
+| `PUMP_THRESHOLD` | 8 | run 累積漲幅門檻（%） |
+| `CONSOLIDATION_MIN_HOURS` | 16 | 最低盤整時數（從最後一次創新高起算） |
 | `BREAKOUT_VOLUME_MULT` | 3 | Type 1 量能倍數（相對前 192 根平均） |
-| `EMA_TOUCH_THRESHOLD` | 0.5 | Type 2 EMA 觸碰容忍距離（%） |
-| `WICK_THRESHOLD` | 3 | Type 2 有效收針（%） |
-| `STRATEGY_RR_MIN` | 1.0 | Type 2 最低盈虧比 |
 | `STRATEGY_COOLDOWN` | 14400 | 告警冷卻秒數（4h） |
-| `RUN_MAX_CANDLES` | 6 | Run 最多允許根數（超過視為緩漲/跌，= 1 天） |
+| `RUN_MAX_CANDLES` | 6 | Run 最多允許根數（超過視為緩漲，= 1 天） |
 | `RUN_VOLUME_MULT` | 1.5 | Run 均量門檻倍數（相對前 N 根基準均量） |
 | `RUN_VOLUME_BASELINE_N` | 20 | Run 量能基準參考根數（前 N 根 4h K 棒） |
-
-**user_config 新增欄位**
-- `TP_STRATEGY_SHORT`：空頭止盈策略（選填，fallback 到 `TP_STRATEGY`）
-- `STRATEGY` 可填 `"TYPE1_SHORT"`：啟用帶量跌破空頭策略
 
 ---
 
@@ -189,7 +145,7 @@ python -m pytest tests/ -v --ignore=tests/test_ws_diag.py
 
 既有功能的回歸測試直接在主流程跑 pytest，不需獨立 Agent。
 
-**conftest.py 注意：** `_DEFAULT_RUNTIME_CONFIG` 使用保守值（`CONSOLIDATION_MIN_HOURS=12`、`WICK_THRESHOLD=2`），與正式預設值不同，為方便控制測試邊界。
+**conftest.py 注意：** `_DEFAULT_RUNTIME_CONFIG` 使用保守值（`CONSOLIDATION_MIN_HOURS=12`），與正式預設值不同，為方便控制測試邊界。
 
 `tests/test_ws_diag.py` 是手動診斷工具（需真實網路），不納入自動測試。
 

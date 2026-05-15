@@ -7,22 +7,16 @@ from app.setting import models
 from app.strategy.state_machine import (
     StrategyPhase,
     on_new_4h_candle,
-    on_new_4h_candle_short,
     on_new_15m_candle,
-    on_new_15m_candle_short,
-    on_new_1h_candle,
     check_invalidation_realtime,
     replay_historical_4h_candles,
 )
 from tests.conftest import (
     make_flat_candle,
     make_15m_ohlc_deque,
-    make_1h_candle,
     setup_symbol_state,
     trigger_long_tracking,
-    trigger_short_tracking,
     make_long_run,
-    make_short_run,
     _4H_MS,
 )
 
@@ -471,102 +465,6 @@ class TestType1Signal:
         assert result["stop_loss"] == pytest.approx(top * 0.985, rel=1e-6)
 
 
-# ─── Type 2 訊號（EMA 反彈）─────────────────────────────────────────────────
-
-class TestType2Signal:
-    # EMA 設低讓 close 能在 (bottom, midpoint) 之間，確保 RR >= 1
-    EMA_VAL = 101.0
-
-    def _setup_ready_with_ema(self):
-        trigger_long_tracking(SYM, TS0, base=100.0, gain_pct=9.0)
-        st       = _st()
-        peak_ts  = st["consolidation_start_ts"]
-        ts_ready = int((peak_ts + 13 * 3600) * 1000)
-        top      = st["consolidation_high"]
-        c = (ts_ready, top * 0.99, top * 0.999, top * 0.985, top * 0.995, 1000.0)
-        on_new_4h_candle(SYM, c)
-        assert _st()["phase"] == StrategyPhase.READY
-        setup_symbol_state(
-            SYM,
-            ema_4h={15: self.EMA_VAL},
-            last_price=110.0,
-            kline_15m_ohlc=make_15m_ohlc_deque(),
-        )
-
-    def test_ema_touch_with_wick_and_rr_triggers(self):
-        self._setup_ready_with_ema()
-        st     = _st()
-        bottom = st["consolidation_low"]
-        top    = st["consolidation_high"]
-        ema    = self.EMA_VAL
-
-        # low 觸碰 EMA，close 高於 low 2.4%（滿足 WICK_THRESHOLD=2%），且 RR > 1
-        low   = ema * 0.999
-        open_ = ema + 0.1          # open > EMA（多頭確認）
-        close = low * 1.024        # wick 2.4% > 2% 門檻，且 close 夠低讓 RR > 1
-        assert (top - close) / (close - bottom) >= 1.0, "RR 不足，請調整 EMA_VAL"
-
-        ts     = TS0 + 14 * 3600 * 1000
-        candle = make_1h_candle(ts, open_, top * 0.99, low, close)
-        result = on_new_1h_candle(SYM, candle)
-        assert result is not None
-        assert result["type"] == "type2"
-
-    def test_no_signal_when_open_below_ema(self):
-        self._setup_ready_with_ema()
-        ema    = self.EMA_VAL
-        low    = ema * 0.999
-        open_  = ema - 0.1
-        close  = ema + 2.0
-        ts     = TS0 + 14 * 3600 * 1000
-        candle = make_1h_candle(ts, open_, close * 1.01, low, close)
-        assert on_new_1h_candle(SYM, candle) is None
-
-    def test_no_signal_when_wick_insufficient(self):
-        self._setup_ready_with_ema()
-        ema    = self.EMA_VAL
-        low    = ema * 0.999
-        open_  = ema + 0.1
-        close  = low * 1.005   # 收針僅 0.5%，不足 2%
-        ts     = TS0 + 14 * 3600 * 1000
-        candle = make_1h_candle(ts, open_, close * 1.005, low, close)
-        assert on_new_1h_candle(SYM, candle) is None
-
-    def test_no_signal_when_rr_insufficient(self):
-        """close 太高導致 RR < 1.0 → 不觸發。"""
-        self._setup_ready_with_ema()
-        st    = _st()
-        top   = st["consolidation_high"]
-        ema   = self.EMA_VAL
-        low   = ema * 0.999
-        open_ = ema + 0.1
-        close = top * 0.998   # close 幾乎等於頂部 → RR << 1
-        ts    = TS0 + 14 * 3600 * 1000
-        assert on_new_1h_candle(SYM, make_1h_candle(ts, open_, top * 0.99, low, close)) is None
-
-    def test_1h_low_below_bottom_resets_to_idle(self):
-        """1h K low 跌破 consolidation_low → 廢棄，回到 IDLE。"""
-        self._setup_ready_with_ema()
-        bottom = _st()["consolidation_low"]
-        low    = bottom * 0.99
-        open_  = bottom * 1.01
-        close  = bottom * 1.005
-        ts     = TS0 + 14 * 3600 * 1000
-        result = on_new_1h_candle(SYM, make_1h_candle(ts, open_, close * 1.01, low, close))
-        assert result is None
-        assert _st()["phase"] == StrategyPhase.IDLE
-
-    def test_no_signal_when_no_ema_touched(self):
-        """1h K low 未觸碰任何 EMA → 不觸發。"""
-        self._setup_ready_with_ema()
-        setup_symbol_state(SYM, ema_4h={15: 50.0})   # EMA 遠低於 low，不觸碰
-        low   = 103.0
-        open_ = 104.0
-        close = 105.0
-        ts    = TS0 + 14 * 3600 * 1000
-        assert on_new_1h_candle(SYM, make_1h_candle(ts, open_, 106.0, low, close)) is None
-
-
 # ─── 即時廢棄掃描 ─────────────────────────────────────────────────────────────
 
 class TestRealtimeInvalidation:
@@ -577,14 +475,6 @@ class TestRealtimeInvalidation:
         setup_symbol_state(SYM, last_price=bottom * 0.99)
         assert check_invalidation_realtime(SYM) is True
         assert _st()["phase"] == StrategyPhase.IDLE
-
-    def test_price_above_top_resets_short_to_idle(self):
-        """即時價格突破空頭頂部 → 空頭廢棄為 IDLE。"""
-        trigger_short_tracking(SYM, TS0)
-        top = models.strategy_state_short[SYM]["consolidation_high"]
-        setup_symbol_state(SYM, last_price=top * 1.01)
-        assert check_invalidation_realtime(SYM) is True
-        assert models.strategy_state_short[SYM]["phase"] == StrategyPhase.IDLE
 
     def test_price_equal_to_bottom_not_invalidated(self):
         """即時價格等於多頭底部 → 邊界不廢棄。"""
@@ -622,7 +512,6 @@ class TestReplay:
         setup_symbol_state(SYM)
         models.symbol_state[SYM]["kline_4h_ohlc"] = deque(all_candles, maxlen=50)
         models.strategy_state.pop(SYM, None)
-        models.strategy_state_short.pop(SYM, None)
         replay_historical_4h_candles(SYM)
 
         assert models.strategy_state.get(SYM, {}).get("phase") == StrategyPhase.TRACKING
@@ -645,85 +534,3 @@ class TestReplay:
 
         assert models.strategy_state.get(SYM, {}).get("phase", StrategyPhase.IDLE) == StrategyPhase.IDLE
 
-    def test_replay_restores_short_tracking_state(self):
-        """回播含達標空頭 run 的 4h 歷史 → 空頭恢復 TRACKING。"""
-        base_ts = TS0 - 20 * _4H_MS
-        baseline_candles = [
-            (base_ts + i * _4H_MS, 100.0, 100.2, 99.0, 99.5, 300.0)
-            for i in range(20)
-        ]
-        candles, _ = make_short_run(TS0, [9.0], volume=2000.0)
-        open2 = candles[-1][4]
-        low1  = candles[-1][3]
-        # 停止根：low > low1（不創新低）
-        c2 = (TS0 + _4H_MS, open2, open2 * 1.001, low1 * 1.001, open2 * 0.999, 1000.0)
-        all_candles = baseline_candles + candles + [c2]
-
-        setup_symbol_state(SYM)
-        models.symbol_state[SYM]["kline_4h_ohlc"] = deque(all_candles, maxlen=50)
-        models.strategy_state.pop(SYM, None)
-        models.strategy_state_short.pop(SYM, None)
-        replay_historical_4h_candles(SYM)
-
-        assert models.strategy_state_short.get(SYM, {}).get("phase") == StrategyPhase.TRACKING
-
-
-# ─── 冷卻時間隔離 ─────────────────────────────────────────────────────────────
-
-class TestCooldownIsolation:
-    def test_long_and_short_cooldowns_are_independent(self):
-        """多頭進入冷卻後，空頭訊號仍可正常觸發（冷卻互不影響）。"""
-        # 讓多頭進入冷卻狀態
-        trigger_long_tracking(SYM, TS0, gain_pct=9.0)
-        models.strategy_state[SYM]["last_alert_ts"] = time.time()
-
-        # 建立空頭 READY
-        trigger_short_tracking(SYM, TS0 + 100 * _4H_MS, drop_pct=9.0)
-        st_short  = models.strategy_state_short[SYM]
-        peak_ts_s = st_short["consolidation_start_ts"]
-        ts_ready  = int((peak_ts_s + 13 * 3600) * 1000)
-        bottom    = st_short["consolidation_low"]
-        on_new_4h_candle_short(
-            SYM, (ts_ready, bottom * 1.01, bottom * 1.015, bottom * 1.001, bottom * 1.005, 1000.0)
-        )
-        assert models.strategy_state_short[SYM]["phase"] == StrategyPhase.READY
-        setup_symbol_state(SYM, kline_15m_ohlc=make_15m_ohlc_deque(count=200, base_volume=100.0))
-
-        # 空頭訊號應觸發（不受多頭冷卻影響）
-        bottom    = models.strategy_state_short[SYM]["consolidation_low"]
-        ts_candle = ts_ready + _4H_MS
-        candle    = (ts_candle, bottom, bottom * 1.005, bottom * 0.985, bottom * 0.99, 400.0)
-        result    = on_new_15m_candle_short(SYM, candle)
-        assert result is not None
-        assert result["type"] == "type1_short"
-
-
-# ─── 廢棄隔離性 ───────────────────────────────────────────────────────────────
-
-class TestInvalidationIsolation:
-    def test_long_invalidation_does_not_affect_short(self):
-        """多頭 4h K 廢棄不影響空頭狀態。"""
-        trigger_long_tracking(SYM, TS0)
-        trigger_short_tracking(SYM, TS0 + 100 * _4H_MS, drop_pct=9.0)
-        short_phase_before = models.strategy_state_short[SYM]["phase"]
-
-        bottom  = models.strategy_state[SYM]["consolidation_low"]
-        ts_next = TS0 + 2 * _4H_MS
-        c = (ts_next, bottom * 0.99, bottom * 1.01, bottom * 0.98, bottom * 0.985, 1000.0)
-        on_new_4h_candle(SYM, c)
-
-        assert models.strategy_state[SYM]["phase"] == StrategyPhase.IDLE
-        assert models.strategy_state_short[SYM]["phase"] == short_phase_before
-
-    def test_short_realtime_invalidation_does_not_affect_long(self):
-        """即時價格廢棄空頭，不影響多頭狀態。"""
-        trigger_long_tracking(SYM, TS0)
-        trigger_short_tracking(SYM, TS0 + 100 * _4H_MS, drop_pct=9.0)
-        long_phase_before = models.strategy_state[SYM]["phase"]
-
-        short_top = models.strategy_state_short[SYM]["consolidation_high"]
-        setup_symbol_state(SYM, last_price=short_top * 1.01)
-        check_invalidation_realtime(SYM)
-
-        assert models.strategy_state_short[SYM]["phase"] == StrategyPhase.IDLE
-        assert models.strategy_state[SYM]["phase"] == long_phase_before
