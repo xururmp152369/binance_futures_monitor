@@ -24,11 +24,12 @@ PUMP_THRESHOLD            = 3      # 觸發 K 單根漲幅門檻（%）：(close
 TRIGGER_VOLUME_MULT       = 3      # 觸發 K 量能倍數（當根量需 > 前 N 根均量 × 此值）
 TRIGGER_VOLUME_BASELINE_N = 12     # 觸發量能基準根數（前 N 根 4h K 棒，排除當根）
 # ── 盤整 ────────────────────────────────────────────────────────────────────────
-CONSOLIDATION_MIN_HOURS   = 12     # 最低盤整時數（從最後一次創新高起算）→ READY
-METHOD_B_GAIN_ADVANTAGE   = 1.0    # Method B：新觸發 K 漲幅需超過前觸發 K 漲幅 + N%
+CONSOLIDATION_MIN_HOURS      = 12   # 最低盤整時數（從最後一次創新高起算）→ READY
+METHOD_B_GAIN_ADVANTAGE      = 1.0  # Method B：新觸發 K 漲幅需超過前觸發 K 漲幅 + N%
+METHOD_B_RELAXED_THRESHOLD   = 10.0 # 原始觸發 K 漲幅超過此值時，Method B 不需 N+1%，滿足觸發條件即完整重置
 # ── Type 1 進場訊號（15m 帶量突破） ────────────────────────────────────────────
-BREAKOUT_VOLUME_MULT      = 4.5    # Type1 量能倍數（相對前 192 根 15m 均量）
+BREAKOUT_VOLUME_MULT      = 3.5    # Type1 量能倍數（相對前 192 根 15m 均量）
 BREAKOUT_BODY_PCT         = 0.005  # Type1 實體超頂幅度（0.5%）：close > top × (1 + N)
-LOOKBACK_VOLUME_MULT      = 3      # Type1 回掃止損放量門檻（低於此倍數即停止往回）
+LOOKBACK_VOLUME_MULT      = 2.5    # Type1 回掃止損放量門檻（低於此倍數即停止往回）
 # ── 冷卻 ────────────────────────────────────────────────────────────────────────
 STRATEGY_COOLDOWN         = 14400  # 策略告警冷卻秒數（4 小時）

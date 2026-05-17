@@ -11,3 +11,5 @@ class TGBotCommand(StrEnum):
     REGISTER  = "register"
     LOGIN     = "login"
     LOGOUT    = "logout"
+    READY     = "ready"
+    TRACKING  = "tracking"

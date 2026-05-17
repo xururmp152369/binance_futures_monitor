@@ -1,7 +1,11 @@
+import time
 import json
 from datetime import datetime
 from telegram import Update
 from telegram.ext import ContextTypes
+from ..setting import models
+from ..setting.config import CONSOLIDATION_MIN_HOURS
+from ..strategy.state_machine import StrategyPhase
 from ..user.user_config import (
     CONFIG_TEMPLATE_TEXT,
     get_user_config,
@@ -292,6 +296,91 @@ async def handle_json_message(update: Update, _context: ContextTypes.DEFAULT_TYP
     )
 
 
+# ─── 策略狀態查詢 ─────────────────────────────────────────────────────────────
+
+def _fmt_price(p: float) -> str:
+    if p >= 1000:
+        return f"{p:.2f}"
+    if p >= 1:
+        return f"{p:.4f}"
+    return f"{p:.6f}"
+
+
+def _build_phase_list(phase: StrategyPhase) -> list[tuple[str, dict]]:
+    return [
+        (sym, st) for sym, st in models.strategy_state.items()
+        if st.get("phase") == phase
+    ]
+
+
+async def ready_list(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    """/ready — 列出目前所有 READY 狀態的幣種。"""
+    now = time.time()
+    entries = _build_phase_list(StrategyPhase.READY)
+    if not entries:
+        await update.message.reply_text("目前無 READY 幣種。")
+        return
+
+    entries.sort(
+        key=lambda x: (x[1].get("pump_candle_gain_pct") or 0) * (x[1].get("pump_candle_volume_ratio") or 0),
+        reverse=True,
+    )
+
+    lines = [f"📋 *READY 清單*（{len(entries)} 個）"]
+    for i, (sym, st) in enumerate(entries, 1):
+        trigger_dt  = datetime.fromtimestamp(st["pump_candle_time"]).strftime("%m/%d %H:%M")
+        conso_hrs   = (now - st["consolidation_start_ts"]) / 3600
+        gain_pct    = st.get("pump_candle_gain_pct") or 0
+        vol_ratio   = st.get("pump_candle_volume_ratio") or 0
+        bot_price   = _fmt_price(st["consolidation_low"])
+        top_price   = _fmt_price(st["consolidation_high"])
+
+        last_price  = models.symbol_state.get(sym, {}).get("last_price")
+        dist_str    = ""
+        if last_price and st["consolidation_high"]:
+            dist_pct = (last_price / st["consolidation_high"] - 1) * 100
+            dist_str = f"  距頂 `{dist_pct:+.1f}%`"
+
+        lines.append(
+            f"{i}. `{sym}.P`  ↑{gain_pct:.1f}%  量×{vol_ratio:.1f}"
+            f"  觸發 {trigger_dt}  盤整 {conso_hrs:.0f}hr"
+            f"  底 `{bot_price}`  頂 `{top_price}`{dist_str}"
+        )
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def tracking_list(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    """/tracking — 列出目前所有 TRACKING 狀態的幣種。"""
+    now = time.time()
+    entries = _build_phase_list(StrategyPhase.TRACKING)
+    if not entries:
+        await update.message.reply_text("目前無 TRACKING 幣種。")
+        return
+
+    entries.sort(
+        key=lambda x: (x[1].get("pump_candle_gain_pct") or 0) * (x[1].get("pump_candle_volume_ratio") or 0),
+        reverse=True,
+    )
+
+    lines = [f"📋 *TRACKING 清單*（{len(entries)} 個）"]
+    for i, (sym, st) in enumerate(entries, 1):
+        trigger_dt  = datetime.fromtimestamp(st["pump_candle_time"]).strftime("%m/%d %H:%M")
+        elapsed_hrs = (now - st["consolidation_start_ts"]) / 3600
+        gain_pct    = st.get("pump_candle_gain_pct") or 0
+        vol_ratio   = st.get("pump_candle_volume_ratio") or 0
+        bot_price   = _fmt_price(st["consolidation_low"])
+        top_price   = _fmt_price(st["consolidation_high"])
+
+        lines.append(
+            f"{i}. `{sym}.P`  ↑{gain_pct:.1f}%  量×{vol_ratio:.1f}"
+            f"  觸發 {trigger_dt}  已盤整 {elapsed_hrs:.0f}hr/需{CONSOLIDATION_MIN_HOURS}hr"
+            f"  底 `{bot_price}`  頂 `{top_price}`"
+        )
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
 # ─── 系統指令 ─────────────────────────────────────────────────────────────────
 
 async def command(update: Update, _context: ContextTypes.DEFAULT_TYPE):
@@ -307,6 +396,9 @@ async def command(update: Update, _context: ContextTypes.DEFAULT_TYPE):
         "/setup — 取得自動開單設定範本\n"
         "/myconfig — 查看目前個人設定\n"
         "/myconfig 欄位 值 — 更新單一欄位，例：/myconfig LONG_ORDER_LIMIT 5\n\n"
+        "📊 策略狀態查詢：\n"
+        "/ready — 查看 READY 清單（盤整成熟，等待突破）\n"
+        "/tracking — 查看 TRACKING 清單（盤整進行中）\n"
     )
 
 

@@ -131,6 +131,8 @@ async def main():
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.REGISTER,  command.register))
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.LOGIN,     command.login))
     application.add_handler(CommandHandler(bot_enum.TGBotCommand.LOGOUT,    command.logout))
+    application.add_handler(CommandHandler(bot_enum.TGBotCommand.READY,     command.ready_list))
+    application.add_handler(CommandHandler(bot_enum.TGBotCommand.TRACKING,  command.tracking_list))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, command.handle_json_message))
 
     # Binance client

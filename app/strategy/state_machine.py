@@ -4,7 +4,7 @@ from ..setting import models
 from ..setting.config import (
     CONSOLIDATION_MIN_HOURS,
     PUMP_THRESHOLD, TRIGGER_VOLUME_MULT, TRIGGER_VOLUME_BASELINE_N,
-    METHOD_B_GAIN_ADVANTAGE,
+    METHOD_B_GAIN_ADVANTAGE, METHOD_B_RELAXED_THRESHOLD,
     BREAKOUT_VOLUME_MULT, BREAKOUT_BODY_PCT, STRATEGY_COOLDOWN,
     LOOKBACK_VOLUME_MULT,
 )
@@ -30,11 +30,13 @@ def _init_state() -> dict:
     return {
         "phase":                  StrategyPhase.IDLE,
         # ── 觸發 K 棒資訊 ─────────────────────────────
-        "pump_candle_open":       None,
-        "pump_candle_close":      None,
-        "pump_candle_low":        None,
-        "pump_candle_high":       None,
-        "pump_candle_time":       None,
+        "pump_candle_open":         None,
+        "pump_candle_close":        None,
+        "pump_candle_low":          None,
+        "pump_candle_high":         None,
+        "pump_candle_time":         None,
+        "pump_candle_gain_pct":     None,
+        "pump_candle_volume_ratio": None,
         # ── 盤整邊界 ──────────────────────────────────
         "consolidation_low":      None,   # 多頭廢棄線 / 空頭突破目標
         "consolidation_high":     None,   # 多頭突破目標 / 空頭廢棄線
@@ -119,33 +121,30 @@ def _get_trigger_volume_baseline(symbol: str) -> float | None:
     return sum(c[5] for c in baseline) / len(baseline)
 
 
-def _is_trigger_volume(symbol: str, quote_volume: float) -> bool:
-    """當根量 > 前 N 根均量 × TRIGGER_VOLUME_MULT。baseline 不足時視為不通過。"""
-    avg = _get_trigger_volume_baseline(symbol)
-    if avg is None or avg <= 0:
-        return False
-    return quote_volume > avg * TRIGGER_VOLUME_MULT
-
 
 # ─── 觸發判斷 ─────────────────────────────────────────────────────────────────
 
 def _check_trigger(
     symbol: str, open_: float, close: float, quote_volume: float,
     direction: Direction,
-) -> tuple[bool, float]:
+) -> tuple[bool, float, float]:
     """
     單根 4h K 棒觸發判斷。
-    回傳 (is_trigger, gain_pct)。
+    回傳 (is_trigger, gain_pct, vol_ratio)。
     三個條件全部通過才觸發：方向、漲跌幅、量能。
     """
     if not _is_directional_candle(open_, close, direction):
-        return False, 0.0
+        return False, 0.0, 0.0
     gain_pct = _candle_gain_pct(open_, close, direction)
     if gain_pct < PUMP_THRESHOLD:
-        return False, gain_pct
-    if not _is_trigger_volume(symbol, quote_volume):
-        return False, gain_pct
-    return True, gain_pct
+        return False, gain_pct, 0.0
+    avg = _get_trigger_volume_baseline(symbol)
+    if avg is None or avg <= 0:
+        return False, gain_pct, 0.0
+    vol_ratio = quote_volume / avg
+    if vol_ratio < TRIGGER_VOLUME_MULT:
+        return False, gain_pct, vol_ratio
+    return True, gain_pct, vol_ratio
 
 
 def _pump_gain_pct(st: dict, direction: Direction) -> float:
@@ -173,7 +172,7 @@ def _reset_to_idle(symbol: str, reason: str, state_dict: dict) -> None:
 def _apply_trigger(
     st: dict, symbol: str,
     open_: float, close: float, high: float, low: float,
-    current_ts: float, gain_pct: float,
+    current_ts: float, gain_pct: float, vol_ratio: float,
     direction: Direction, is_method_b: bool = False,
 ) -> None:
     """將觸發 K 套用到狀態（IDLE→TRACKING 或 Method B 完整重置）。
@@ -202,11 +201,13 @@ def _apply_trigger(
 
     st.update({
         "phase":                  StrategyPhase.TRACKING,
-        "pump_candle_open":       open_,
-        "pump_candle_close":      close,
-        "pump_candle_low":        low,
-        "pump_candle_high":       high,
-        "pump_candle_time":       current_ts,
+        "pump_candle_open":         open_,
+        "pump_candle_close":        close,
+        "pump_candle_low":          low,
+        "pump_candle_high":         high,
+        "pump_candle_time":         current_ts,
+        "pump_candle_gain_pct":     gain_pct,
+        "pump_candle_volume_ratio": vol_ratio,
         "consolidation_low":      new_conso_low,
         "consolidation_high":     new_conso_high,
         "consolidation_start_ts": current_ts,
@@ -279,18 +280,24 @@ def on_new_4h_candle(
             return
 
     # ── 觸發判斷（IDLE 首次觸發 / TRACKING+READY 的 Method B）──────────────
-    is_trigger, gain_pct = _check_trigger(symbol, open_, close, quote_volume, direction)
+    is_trigger, gain_pct, vol_ratio = _check_trigger(symbol, open_, close, quote_volume, direction)
 
     if is_trigger:
         if st["phase"] == StrategyPhase.IDLE:
-            _apply_trigger(st, symbol, open_, close, high, low, current_ts, gain_pct, direction)
+            _apply_trigger(st, symbol, open_, close, high, low, current_ts, gain_pct, vol_ratio, direction)
         else:
-            # Method B：新觸發 K 漲幅 > 前觸發 K 漲幅 + METHOD_B_GAIN_ADVANTAGE
             prev_gain = _pump_gain_pct(st, direction)
-            if gain_pct > prev_gain + METHOD_B_GAIN_ADVANTAGE:
+            if prev_gain > METHOD_B_RELAXED_THRESHOLD:
+                # 原始觸發 K 漲幅過大，無法被 N+1% 超越：滿足觸發條件即完整重置
                 _apply_trigger(
                     st, symbol, open_, close, high, low,
-                    current_ts, gain_pct, direction, is_method_b=True,
+                    current_ts, gain_pct, vol_ratio, direction, is_method_b=False,
+                )
+            elif gain_pct > prev_gain + METHOD_B_GAIN_ADVANTAGE:
+                # Method B：新觸發 K 漲幅 > 前觸發 K 漲幅 + METHOD_B_GAIN_ADVANTAGE
+                _apply_trigger(
+                    st, symbol, open_, close, high, low,
+                    current_ts, gain_pct, vol_ratio, direction, is_method_b=True,
                 )
 
     _maybe_transition_to_ready(st, current_ts, symbol)

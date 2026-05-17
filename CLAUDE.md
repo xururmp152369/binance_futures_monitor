@@ -1,21 +1,5 @@
 # CLAUDE.md — Binance 期貨監控機器人
 
-## 目前進行中
-
-### 策略重構：單根帶量 K 棒觸發（取代多根 Run 追蹤）
-
-**目標**：將現行的多根連續延伸 Run 偵測，改為單根 4h 帶量陽線觸發，簡化狀態機。
-
-**主要變更項目**：
-- [ ] `state_machine.py`：移除 Run 多根追蹤邏輯，改為單根觸發判斷
-- [ ] `state_machine.py`：廢棄條件改用實體低點（body low）
-- [ ] `state_machine.py`：Method B 改為新觸發 K 漲幅 > 前觸發 K + 1%
-- [ ] `config.py`：更新/新增相關參數常數
-- [ ] `tests/test_state_machine.py`：依新規格重寫測試
-- [ ] `CLAUDE.md`：更新策略規格說明（本次同步）
-
----
-
 ## 專案概覽
 
 自動化監控 Binance 永續合約，偵測「4h 拉漲後盤整突破」進場機會，透過 Telegram Bot 發訊號並支援自動下單。監控全 USDT 合約，運行於本機 Docker。
