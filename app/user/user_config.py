@@ -299,6 +299,7 @@ CONFIG_TEMPLATE_TEXT = """\
   ‣ `RR_RATIO`：止盈盈虧比（1 = 1R，1.5 = 1.5R）
   ‣ `PERCENT`：達到該盈虧比時平倉的部位比例 (%)，最後一組會自動全數平倉
 • `LONG_ORDER_LIMIT`：同時持有多單部位數上限
+• `SHORT_ORDER_LIMIT`：同時持有空單部位數上限
 • `ADD_SAME_SYMBOL`：同幣種已有倉位時，是否再次開單（加倉）
 • `SYMBOL_BLACKLIST`：不自動開單的幣種清單，空陣列表示不限制
 • `ENABLED`：是否啟用自動開單
@@ -320,6 +321,7 @@ CONFIG_TEMPLATE_TEXT = """\
         { "RR_RATIO": 1.5, "PERCENT": 50 }
     ],
     "LONG_ORDER_LIMIT": 10,
+    "SHORT_ORDER_LIMIT": 5,
     "ADD_SAME_SYMBOL": false,
     "SYMBOL_BLACKLIST": [],
     "ENABLED": true
@@ -401,6 +403,11 @@ def validate_config(data: dict) -> tuple[bool, list[str]]:
     long_order_limit = data.get("LONG_ORDER_LIMIT")
     if not isinstance(long_order_limit, int) or long_order_limit <= 0:
         errors.append("`LONG_ORDER_LIMIT` 必須為正整數")
+
+    short_order_limit = data.get("SHORT_ORDER_LIMIT")
+    if short_order_limit is not None:
+        if not isinstance(short_order_limit, int) or short_order_limit <= 0:
+            errors.append("`SHORT_ORDER_LIMIT` 必須為正整數")
 
     if not isinstance(data.get("ADD_SAME_SYMBOL"), bool):
         errors.append("`ADD_SAME_SYMBOL` 必須為 true 或 false")

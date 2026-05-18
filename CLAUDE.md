@@ -1,94 +1,5 @@
 # CLAUDE.md — Binance 期貨監控機器人
 
-## 目前進行中
-
-### 使用者設定：策略欄位更新 + NOTIFY_STRATEGY + 指令參數
-
-**目標**：讓使用者可設定要接收哪些策略訊號，並更新查詢指令支援多/空頭篩選。
-
-#### 1. `STRATEGY` 欄位廢棄 TYPE1，改用新策略代號
-
-- 舊值 `"TYPE1"` 廢棄，不再接受
-- 新有效值：`"long_breakout"`（多頭盤整突破）、`"short_bounce"`（空頭跌破反彈123）
-- 影響範圍：
-  - `user_config.py`：`_VALID_STRATEGIES`、`validate_config()`、`CONFIG_TEMPLATE_TEXT`
-  - `get_user_config()`：加入舊值自動 migration（`"TYPE1"` → `"long_breakout"`），同 `ORDER_LIMIT` 的做法
-
-#### 2. 新增 `NOTIFY_STRATEGY` 欄位
-
-使用者設定新欄位，控制「想接收哪些策略的訊號通知」，與 `STRATEGY`（自動下單觸發）獨立。
-
-**格式**：與 `STRATEGY` 相同，字串陣列，有效值為 `"long_breakout"` / `"short_bounce"`。
-
-**訊號傳送邏輯**：
-- Type 1 訊號 → 對應策略代號 `"long_breakout"`
-- Type 2 訊號 → 對應策略代號 `"short_bounce"`
-- 發送前，對每位使用者逐一檢查：
-  - `NOTIFY_STRATEGY` **欄位不存在**（舊帳號未更新）→ 不發訊號，發提醒：`"⚠️ 請更新設定以便接收新訊號（輸入 /setup 查看範本）"`
-  - `NOTIFY_STRATEGY` 為空陣列 → 不發訊號，不提醒（使用者主動選擇不接收）
-  - 訊號對應的策略代號在 `NOTIFY_STRATEGY` 中 → 正常發送
-  - 訊號對應的策略代號不在 `NOTIFY_STRATEGY` 中 → 不發，不提醒
-
-**影響範圍**：
-- [ ] `user_config.py`：`CONFIG_TEMPLATE_TEXT`、`validate_config()`、`_ALL_CONFIG_KEYS`、`get_user_config()` migration
-- [ ] `strategy/strategy_alerts.py`：`send_strategy_alert()` 改為依 `NOTIFY_STRATEGY` 篩選接收者
-- [ ] `command/command.py`：`my_config()` 顯示、`handle_json_message()` 儲存確認
-
-#### 3. `/ready` 與 `/tracking` 指令新增方向參數
-
-- **無參數** → 回覆：`"請加上參數 long 或 short，例如：/ready long"`
-- `/ready long` → 顯示多頭 READY 清單（現有邏輯）
-- `/ready short` → 顯示空頭 SHORT_READY 清單（新）
-- `/tracking long` → 顯示多頭 TRACKING 清單（現有邏輯）
-- `/tracking short` → 顯示空頭 SHORT_WATCHING 清單（新）
-
-空頭清單顯示欄位：`short_resistance`（壓力位）、`abandonment_low`（進場觸發線）、`short_rejection_high`（止損）、觀察開始時間、已等待時間。
-
-**影響範圍**：
-- [ ] `command/command.py`：`ready_list()`、`tracking_list()` 改為接收 `context.args`
-
-#### 設定範本更新後的樣貌（`CONFIG_TEMPLATE_TEXT`）
-
-```json
-{
-    "API_KEY": "",
-    "SECRET_KEY": "",
-    "PRD_API_KEY": "",
-    "PRD_SECRET_KEY": "",
-    "ORDER_MODE": "DEV",
-    "STRATEGY": ["long_breakout"],
-    "NOTIFY_STRATEGY": ["long_breakout", "short_bounce"],
-    "RISK_TYPE": 0,
-    "RISK_AMOUNT": 0.1,
-    "RISK_LEVERAGE": 20,
-    "MARGIN_TYPE": "CROSSED",
-    "TP_STRATEGY": [
-        { "RR_RATIO": 1.5, "PERCENT": 50 }
-    ],
-    "LONG_ORDER_LIMIT": 10,
-    "ADD_SAME_SYMBOL": false,
-    "SYMBOL_BLACKLIST": [],
-    "ENABLED": true
-}
-```
-
-策略代號說明（在 `/setup` 說明文字中顯示）：
-- `long_breakout`：多頭盤整突破，4h 帶量拉漲後盤整，15m 帶量突破頂部做多
-- `short_bounce`：空頭跌破反彈123法則，多頭廢棄後反彈被壓制，15m 帶量跌破做空
-
----
-
-### ✅ 已完成：空頭策略實作與策略檔案重構
-
-- [x] `strategy/analysis_utils.py`：共用工具（EMA、量能基準、K棒形態）
-- [x] `strategy/long_breakout.py`：多頭策略邏輯
-- [x] `strategy/short_bounce.py`：空頭狀態機（SHORT_WATCHING / SHORT_READY）
-- [x] `strategy/state_machine.py`：策略協調器，公開 API 不變
-- [x] `setting/config.py`：空頭策略參數常數
-- [x] `setting/models.py`：`short_strategy_state` 全域狀態容器
-
----
-
 ## 專案概覽
 
 自動化監控 Binance 永續合約，偵測多頭「4h 拉漲後盤整突破」與空頭「跌破反彈123法則」進場機會，透過 Telegram Bot 發訊號並支援自動下單。監控全 USDT 合約，運行於本機 Docker。
@@ -136,6 +47,22 @@ Binance WebSocket (markPrice + kline_15m/4h)
 
 ---
 
+## 使用者設定欄位
+
+有效策略代號：`"long_breakout"`（多頭盤整突破）、`"short_bounce"`（空頭跌破反彈123）
+
+| 欄位 | 說明 |
+|------|------|
+| `STRATEGY` | 觸發自動下單的策略代號陣列（必填，非空） |
+| `NOTIFY_STRATEGY` | 接收訊號通知的策略代號陣列（選填；`[]` 靜默；欄位不存在則發提醒） |
+| `LONG_ORDER_LIMIT` | 同時持有多單部位數上限（必填正整數） |
+| `SHORT_ORDER_LIMIT` | 同時持有空單部位數上限（選填正整數） |
+
+訊號通知路由（`strategy_alerts.py`）：Type 1 → `"long_breakout"`；Type 2 → `"short_bounce"`。
+公頻 `CHAT_ID` 不受 `NOTIFY_STRATEGY` 限制，永遠收到所有訊號。
+
+---
+
 ## 多頭策略狀態機規格（long_breakout.py）
 
 ### 觸發偵測（單根帶量 K 棒）
@@ -164,7 +91,8 @@ TRACKING
  ▼
 READY
  │ 廢棄：同上（創新高退回 TRACKING）
- │ Method B：盤整內出現符合觸發條件的 K，且其漲幅 > pump_candle 漲幅 + 1% → 完整重置觸發 K
+ │ Method B：READY 狀態內出現符合觸發條件的 K，且其漲幅 > pump_candle 漲幅 + 1% → 完整重置觸發 K
+ │           （若原 pump_candle 漲幅 > METHOD_B_RELAXED_THRESHOLD，則任何觸發 K 均完整重置）
  └─ 每根 15m 收盤 → Type 1 帶量突破（做多）
 ```
 
@@ -213,7 +141,7 @@ SHORT_WATCHING（觀察反彈）
  ├─ [移除觀察] 反彈 4h K 實體收超 short_resistance 且帶量 → IDLE
  │    max(open,close) > short_resistance 且 volume > 前N根均量 × TRIGGER_VOLUME_MULT
  │
- ├─ [A 靜態壓制] 反彈 4h K 同時滿足（任一成立即可）：
+ ├─ [A 靜態壓制] 反彈 4h K 同時滿足：
  │    (1) high ≥ short_resistance（觸到靜態壓力位）
  │    (2) high ≤ short_resistance × (1 + EMA_TOLERANCE_PCT)（未過深，1.5%）
  │    (3) max(open,close) ≤ short_resistance × (1 - BODY_SUPPRESS_PCT)（實體壓制，0.8%）
@@ -236,6 +164,7 @@ SHORT_WATCHING（觀察反彈）
 
 SHORT_READY（就緒，監控 15m 跌破）
  │ 廢棄：帶量 4h K 實體收超 short_resistance → IDLE
+ │ 即時廢棄：markPrice > short_resistance → IDLE（不觸發新一輪 SHORT_WATCHING）
  └─ 每根 15m 收盤 → Type 2 帶量跌破（做空）
 ```
 
@@ -278,6 +207,8 @@ SHORT_READY（就緒，監控 15m 跌破）
 | `BREAKOUT_VOLUME_MULT` | 3.5 | Type 1 量能倍數（相對前 192 根 15m 均量） |
 | `BREAKOUT_BODY_PCT` | 0.005 | Type 1/2 實體超頂/破底幅度（0.5%） |
 | `LOOKBACK_VOLUME_MULT` | 2.5 | Type 1 回掃止損放量門檻倍數 |
+| `METHOD_B_GAIN_ADVANTAGE` | 1.0 | Method B 觸發漲幅需超原 pump_candle 的幅度（%） |
+| `METHOD_B_RELAXED_THRESHOLD` | 10.0 | 原 pump_candle 漲幅超過此值時，Method B 無需比較優勢直接重置 |
 | `STRATEGY_COOLDOWN` | 14400 | 告警冷卻秒數（4h） |
 
 ### 空頭策略
@@ -305,6 +236,7 @@ SHORT_READY（就緒，監控 15m 跌破）
 6. **廢棄條件用實體**：4h K 廢棄判斷以 `min(open, close)` 為準，下影線不觸發廢棄
 7. **空頭廢棄事件傳遞**：`on_new_4h_candle_long()` 廢棄時回傳事件 dict，由 `state_machine.py` 協調器轉送給 `short_bounce.enter_short_watching()`
 8. **EMA 計算**：`analysis_utils.get_4h_ema()` 使用 `kline_4h_ohlc` 的 close 序列，至少需要 `EMA_LONG_PERIOD`（60）根 K 棒才有效
+9. **Method B 僅在 READY**：Method B 重置邏輯只在 `StrategyPhase.READY` 觸發，TRACKING 不處理
 
 ---
 

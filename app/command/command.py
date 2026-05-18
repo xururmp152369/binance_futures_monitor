@@ -213,6 +213,7 @@ async def my_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"保證金模式：`{margin_type}`\n\n"
         f"{tp_str}\n\n"
         f"多單上限：`{cfg.get('LONG_ORDER_LIMIT')} 筆`\n"
+        f"空單上限：`{cfg.get('SHORT_ORDER_LIMIT', '—')} 筆`\n"
         f"同幣種加倉：`{'是' if cfg.get('ADD_SAME_SYMBOL') else '否'}`\n"
         f"黑名單：{'、'.join(blacklist) if blacklist else '（無）'}\n"
         f"自動開單：`{'開啟' if cfg.get('ENABLED') else '關閉'}`"
@@ -223,7 +224,7 @@ async def my_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
 _ALL_CONFIG_KEYS = {
     "API_KEY", "SECRET_KEY", "PRD_API_KEY", "PRD_SECRET_KEY", "ORDER_MODE",
     "STRATEGY", "NOTIFY_STRATEGY", "RISK_TYPE", "RISK_AMOUNT", "RISK_LEVERAGE", "MARGIN_TYPE",
-    "TP_STRATEGY", "LONG_ORDER_LIMIT",
+    "TP_STRATEGY", "LONG_ORDER_LIMIT", "SHORT_ORDER_LIMIT",
     "ADD_SAME_SYMBOL", "SYMBOL_BLACKLIST", "ENABLED",
 }
 
@@ -310,6 +311,7 @@ async def handle_json_message(update: Update, _context: ContextTypes.DEFAULT_TYP
         f"保證金模式：`{margin_type}`\n\n"
         f"{tp_str}\n\n"
         f"多單上限：`{data.get('LONG_ORDER_LIMIT')} 筆`\n"
+        f"空單上限：`{data.get('SHORT_ORDER_LIMIT', '—')} 筆`\n"
         f"自動開單：`{'開啟' if data.get('ENABLED') else '關閉'}`",
         parse_mode="Markdown",
     )
