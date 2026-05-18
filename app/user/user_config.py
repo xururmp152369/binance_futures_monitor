@@ -169,6 +169,11 @@ def get_user_config(account_name: str) -> dict | None:
     if "ORDER_LIMIT" in cfg and "LONG_ORDER_LIMIT" not in cfg:
         cfg["LONG_ORDER_LIMIT"] = cfg.pop("ORDER_LIMIT")
         save_user_config(account_name, cfg)
+    # 舊策略代號 TYPE1 → long_breakout 自動 migration
+    strategy = cfg.get("STRATEGY", [])
+    if "TYPE1" in strategy:
+        cfg["STRATEGY"] = ["long_breakout" if s == "TYPE1" else s for s in strategy]
+        save_user_config(account_name, cfg)
     return cfg
 
 
@@ -268,7 +273,7 @@ async def check_expired_sessions(bot) -> None:
 
 # ─── 設定範本 ─────────────────────────────────────────────────────────────────
 
-_VALID_STRATEGIES = {"TYPE1"}
+_VALID_STRATEGIES = {"long_breakout", "short_bounce"}
 
 CONFIG_TEMPLATE_TEXT = """\
 📋 *個人設定說明*
@@ -279,7 +284,11 @@ CONFIG_TEMPLATE_TEXT = """\
 • `API_KEY` / `SECRET_KEY`：模擬帳戶（Testnet）API 金鑰
 • `PRD_API_KEY` / `PRD_SECRET_KEY`：正式帳戶 API 金鑰（ORDER\\_MODE=PRD 時必填）
 • `ORDER_MODE`：下單環境，`"DEV"`（模擬，預設）或 `"PRD"`（正式）
-• `STRATEGY`：觸發自動開單的策略，目前支援 `"TYPE1"`（帶量突破多頭）
+• `STRATEGY`：觸發*自動開單*的策略
+  ‣ `"long_breakout"`：多頭盤整突破（4h 帶量拉漲 → 盤整 → 15m 帶量突破做多）
+  ‣ `"short_bounce"`：空頭跌破反彈123法則（多頭廢棄 → 反彈被壓制 → 15m 帶量跌破做空）
+• `NOTIFY_STRATEGY`：接收*訊號通知*的策略（可與 STRATEGY 不同，不想接收填 `[]`）
+  ‣ 有效值同上，填哪些就收哪些的訊號
 • `RISK_TYPE`：風險計算方式
   ‣ `0`：固定投入金額（RISK\\_AMOUNT × 槓桿 USDT）
   ‣ `1`：固定損失金額（依止損比例換算手數）
@@ -301,7 +310,8 @@ CONFIG_TEMPLATE_TEXT = """\
     "PRD_API_KEY": "",
     "PRD_SECRET_KEY": "",
     "ORDER_MODE": "DEV",
-    "STRATEGY": ["TYPE1"],
+    "STRATEGY": ["long_breakout"],
+    "NOTIFY_STRATEGY": ["long_breakout", "short_bounce"],
     "RISK_TYPE": 0,
     "RISK_AMOUNT": 0.1,
     "RISK_LEVERAGE": 20,
@@ -336,9 +346,16 @@ def validate_config(data: dict) -> tuple[bool, list[str]]:
 
     strategy = data.get("STRATEGY")
     if not isinstance(strategy, list) or not strategy:
-        errors.append("`STRATEGY` 必須為非空陣列，如 [\"TYPE1\"]")
+        errors.append("`STRATEGY` 必須為非空陣列，如 [\"long_breakout\"]")
     elif invalid := set(strategy) - _VALID_STRATEGIES:
-        errors.append(f"`STRATEGY` 包含無效值：{sorted(invalid)}，只接受 TYPE1")
+        errors.append(f"`STRATEGY` 包含無效值：{sorted(invalid)}，只接受 long_breakout、short_bounce")
+
+    notify_strategy = data.get("NOTIFY_STRATEGY")
+    if notify_strategy is not None:
+        if not isinstance(notify_strategy, list):
+            errors.append("`NOTIFY_STRATEGY` 必須為陣列，如 [\"long_breakout\"] 或 []")
+        elif invalid_ns := set(notify_strategy) - _VALID_STRATEGIES:
+            errors.append(f"`NOTIFY_STRATEGY` 包含無效值：{sorted(invalid_ns)}，只接受 long_breakout、short_bounce")
 
     if data.get("RISK_TYPE") not in (0, 1):
         errors.append("`RISK_TYPE` 必須為 0（固定金額）或 1（固定損失）")
