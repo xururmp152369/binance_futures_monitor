@@ -55,6 +55,8 @@ Binance WebSocket (markPrice + kline_15m/4h)
 |------|------|
 | `STRATEGY` | 觸發自動下單的策略代號陣列（必填，非空） |
 | `NOTIFY_STRATEGY` | 接收訊號通知的策略代號陣列（選填；`[]` 靜默；欄位不存在則發提醒） |
+| `LONG_TP_STRATEGY` | 多頭止盈策略陣列（必填，1～3 組，格式同舊 `TP_STRATEGY`） |
+| `SHORT_TP_STRATEGY` | 空頭止盈策略陣列（選填；不填則沿用 `LONG_TP_STRATEGY`） |
 | `LONG_ORDER_LIMIT` | 同時持有多單部位數上限（必填正整數） |
 | `SHORT_ORDER_LIMIT` | 同時持有空單部位數上限（選填正整數） |
 

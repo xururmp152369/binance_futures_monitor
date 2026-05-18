@@ -7,6 +7,11 @@ from ..user.user_config import get_all_trading_configs_with_chat_id
 
 log = setup_logging()
 
+# 訊號類型 → 設定中的策略代號
+_SIGNAL_TO_STRATEGY = {
+    "type1": "long_breakout",
+    "type2": "short_bounce",
+}
 
 
 def _floor_to_precision(value: float, precision: int) -> float:
@@ -59,9 +64,12 @@ async def _place_orders_for_user(
       (True,  msg)  → 開倉成功
       (False, msg)  → 開倉失敗，msg 含錯誤說明
     """
-    # 策略類型比對 → None = 略過（不通知）
-    signal_type = signal["type"].upper()
-    if signal_type not in [s.upper() for s in cfg.get("STRATEGY", [])]:
+    # 訊號類型 → 策略代號比對
+    raw_type     = signal["type"].lower()
+    strategy_key = _SIGNAL_TO_STRATEGY.get(raw_type)
+    if strategy_key is None:
+        return None
+    if strategy_key not in [s.lower() for s in cfg.get("STRATEGY", [])]:
         return None
 
     # 黑名單檢查 → None = 略過（不通知）
@@ -70,7 +78,14 @@ async def _place_orders_for_user(
         log.info(f"[自動開單] {symbol} 在黑名單，略過 ({account_name})")
         return None
 
-    use_prd = cfg.get("ORDER_MODE", "DEV") == "PRD"
+    # 方向判斷
+    is_long       = raw_type == "type1"
+    entry_side    = "BUY"  if is_long else "SELL"
+    exit_side     = "SELL" if is_long else "BUY"
+    direction_str = "多頭" if is_long else "空頭"
+    side_label    = "多單" if is_long else "空單"
+
+    use_prd    = cfg.get("ORDER_MODE", "DEV") == "PRD"
     api_key    = cfg["PRD_API_KEY"]    if use_prd else cfg["API_KEY"]
     api_secret = cfg["PRD_SECRET_KEY"] if use_prd else cfg["SECRET_KEY"]
 
@@ -85,21 +100,22 @@ async def _place_orders_for_user(
 
         # 部位上限 & 加倉檢查
         open_positions = await _get_open_positions(client)
-        side_positions = [p for p in open_positions if float(p.get("positionAmt", 0)) > 0]
-        order_limit    = cfg["LONG_ORDER_LIMIT"]
-        side_label     = "多單"
+        if is_long:
+            side_positions = [p for p in open_positions if float(p.get("positionAmt", 0)) > 0]
+            order_limit    = cfg["LONG_ORDER_LIMIT"]
+        else:
+            side_positions = [p for p in open_positions if float(p.get("positionAmt", 0)) < 0]
+            order_limit    = cfg.get("SHORT_ORDER_LIMIT") or cfg["LONG_ORDER_LIMIT"]
 
         # 判斷是否為加倉（該 symbol 已有同方向持倉）
         is_add_on = any(p["symbol"] == symbol for p in side_positions)
 
         if is_add_on:
-            # 加倉：跳過持倉上限，但需確認設定允許加倉
             if not cfg.get("ADD_SAME_SYMBOL", False):
                 msg = f"{symbol} 已有{side_label}持倉，且設定不允許加倉"
                 log.info(f"[自動開單] {msg} ({account_name})")
                 return (False, msg)
         else:
-            # 新倉：檢查持倉上限
             if len(side_positions) >= order_limit:
                 msg = f"{side_label}部位已達上限（{len(side_positions)}/{order_limit}），略過 {symbol}"
                 log.info(f"[自動開單] {msg} ({account_name})")
@@ -127,13 +143,9 @@ async def _place_orders_for_user(
             except Exception as e:
                 log.warning(f"[自動開單] {symbol} 清除舊條件單失敗（忽略）: {e}")
 
-        entry_side    = "BUY"
-        exit_side     = "SELL"
-        direction_str = "多頭"
-
         # 計算下單量
-        entry_price                   = signal["close"]
-        stop_loss                     = signal["stop_loss"]
+        entry_price                    = signal["close"]
+        stop_loss                      = signal["stop_loss"]
         qty_precision, price_precision = await _get_precisions(client, symbol)
         raw_qty                        = _calc_quantity(cfg, entry_price, stop_loss)
         qty                            = _floor_to_precision(raw_qty, qty_precision)
@@ -145,8 +157,8 @@ async def _place_orders_for_user(
 
         # 市價開倉（確認倉位成立後才設置 SL/TP，最多重試 5 次）
         MAX_RETRIES = 5
-        fill_price = None
-        filled_qty = qty
+        fill_price  = None
+        filled_qty  = qty
         for attempt in range(1, MAX_RETRIES + 1):
             order_id = f"cc_{symbol}_{int(time.time() * 1000)}"
             try:
@@ -221,13 +233,19 @@ async def _place_orders_for_user(
             log.error(f"[自動開單] {symbol} 止損掛出失敗: {e} ({account_name})")
             warnings.append(f"⚠️ 止損設置失敗，請手動設置\n{e}")
 
-        tp_strategy = cfg.get("TP_STRATEGY", [])
+        # 止盈策略（空頭若未設定則 fallback 到多頭止盈）
+        if is_long:
+            tp_strategy = cfg.get("LONG_TP_STRATEGY", [])
+        else:
+            tp_strategy = cfg.get("SHORT_TP_STRATEGY") or cfg.get("LONG_TP_STRATEGY", [])
+
         last_idx  = len(tp_strategy) - 1
         tp_failed = False
         for i, tp_entry in enumerate(tp_strategy):
-            rr      = tp_entry["RR_RATIO"]
-            pct     = tp_entry["PERCENT"]
-            tp_price = fill_price + sl_dist * rr
+            rr       = tp_entry["RR_RATIO"]
+            pct      = tp_entry["PERCENT"]
+            # 多頭止盈往上，空頭止盈往下
+            tp_price = fill_price + sl_dist * rr if is_long else fill_price - sl_dist * rr
             is_last  = (i == last_idx)
 
             try:
@@ -262,9 +280,9 @@ async def _place_orders_for_user(
         if tp_failed:
             warnings.append("⚠️ 部分止盈設置失敗，請手動確認")
 
-        fmt_price  = f"{fill_price:,.6f}".rstrip("0").rstrip(".")
-        margin_val = filled_qty * fill_price / leverage
-        fmt_margin = f"{margin_val:,.2f}"
+        fmt_price   = f"{fill_price:,.6f}".rstrip("0").rstrip(".")
+        margin_val  = filled_qty * fill_price / leverage
+        fmt_margin  = f"{margin_val:,.2f}"
         success_msg = f"市價 {fmt_price} 已開，倉位價值 {fmt_margin} USDT"
         if warnings:
             success_msg += "\n" + "\n".join(warnings)
@@ -283,7 +301,7 @@ async def place_orders_for_all_users(symbol: str, signal: dict) -> dict[int, tup
 
     回傳 {chat_id: (success, message)}，供後續對每位使用者發送開單結果通知。
     """
-    tasks: list = []
+    tasks:    list = []
     chat_ids: list[int] = []
     for account_name, chat_id, cfg in get_all_trading_configs_with_chat_id():
         if not cfg.get("ENABLED"):

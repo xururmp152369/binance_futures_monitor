@@ -186,7 +186,9 @@ async def my_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     blacklist   = cfg.get("SYMBOL_BLACKLIST") or []
     margin_type = cfg.get("MARGIN_TYPE", "CROSSED")
     order_mode  = cfg.get("ORDER_MODE", "DEV")
-    tp_str = _fmt_tp(cfg.get("TP_STRATEGY", []), "止盈策略")
+    long_tp_str  = _fmt_tp(cfg.get("LONG_TP_STRATEGY", []), "多頭止盈策略")
+    short_tp_raw = cfg.get("SHORT_TP_STRATEGY")
+    short_tp_str = _fmt_tp(short_tp_raw, "空頭止盈策略") if short_tp_raw else "空頭止盈策略：（同多頭）"
 
     notify_strat = cfg.get("NOTIFY_STRATEGY")
     if notify_strat is None:
@@ -211,7 +213,8 @@ async def my_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"投入/損失金額：`{cfg.get('RISK_AMOUNT')} USDT`\n"
         f"槓桿：`{cfg.get('RISK_LEVERAGE')}x`\n"
         f"保證金模式：`{margin_type}`\n\n"
-        f"{tp_str}\n\n"
+        f"{long_tp_str}\n"
+        f"{short_tp_str}\n\n"
         f"多單上限：`{cfg.get('LONG_ORDER_LIMIT')} 筆`\n"
         f"空單上限：`{cfg.get('SHORT_ORDER_LIMIT', '—')} 筆`\n"
         f"同幣種加倉：`{'是' if cfg.get('ADD_SAME_SYMBOL') else '否'}`\n"
@@ -224,7 +227,7 @@ async def my_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
 _ALL_CONFIG_KEYS = {
     "API_KEY", "SECRET_KEY", "PRD_API_KEY", "PRD_SECRET_KEY", "ORDER_MODE",
     "STRATEGY", "NOTIFY_STRATEGY", "RISK_TYPE", "RISK_AMOUNT", "RISK_LEVERAGE", "MARGIN_TYPE",
-    "TP_STRATEGY", "LONG_ORDER_LIMIT", "SHORT_ORDER_LIMIT",
+    "LONG_TP_STRATEGY", "SHORT_TP_STRATEGY", "LONG_ORDER_LIMIT", "SHORT_ORDER_LIMIT",
     "ADD_SAME_SYMBOL", "SYMBOL_BLACKLIST", "ENABLED",
 }
 
@@ -291,7 +294,9 @@ async def handle_json_message(update: Update, _context: ContextTypes.DEFAULT_TYP
 
     risk_label  = "固定投入金額" if data.get("RISK_TYPE") == 0 else "固定損失金額"
     margin_type = data.get("MARGIN_TYPE", "CROSSED")
-    tp_str = _fmt_tp_save(data.get("TP_STRATEGY", []), "止盈策略")
+    long_tp_str  = _fmt_tp_save(data.get("LONG_TP_STRATEGY", []), "多頭止盈策略")
+    short_tp_raw = data.get("SHORT_TP_STRATEGY")
+    short_tp_str = _fmt_tp_save(short_tp_raw, "空頭止盈策略") if short_tp_raw else "空頭止盈策略：（同多頭）"
 
     notify_strat = data.get("NOTIFY_STRATEGY")
     if notify_strat is None:
@@ -309,7 +314,8 @@ async def handle_json_message(update: Update, _context: ContextTypes.DEFAULT_TYP
         f"投入/損失金額：`{data.get('RISK_AMOUNT')} USDT`\n"
         f"槓桿：`{data.get('RISK_LEVERAGE')}x`\n"
         f"保證金模式：`{margin_type}`\n\n"
-        f"{tp_str}\n\n"
+        f"{long_tp_str}\n"
+        f"{short_tp_str}\n\n"
         f"多單上限：`{data.get('LONG_ORDER_LIMIT')} 筆`\n"
         f"空單上限：`{data.get('SHORT_ORDER_LIMIT', '—')} 筆`\n"
         f"自動開單：`{'開啟' if data.get('ENABLED') else '關閉'}`",

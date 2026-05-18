@@ -169,6 +169,10 @@ def get_user_config(account_name: str) -> dict | None:
     if "ORDER_LIMIT" in cfg and "LONG_ORDER_LIMIT" not in cfg:
         cfg["LONG_ORDER_LIMIT"] = cfg.pop("ORDER_LIMIT")
         save_user_config(account_name, cfg)
+    # 舊設定 TP_STRATEGY → LONG_TP_STRATEGY 自動 migration
+    if "TP_STRATEGY" in cfg and "LONG_TP_STRATEGY" not in cfg:
+        cfg["LONG_TP_STRATEGY"] = cfg.pop("TP_STRATEGY")
+        save_user_config(account_name, cfg)
     # 舊策略代號 TYPE1 → long_breakout 自動 migration
     strategy = cfg.get("STRATEGY", [])
     if "TYPE1" in strategy:
@@ -295,9 +299,10 @@ CONFIG_TEMPLATE_TEXT = """\
 • `RISK_AMOUNT`：投入或損失金額（USDT）
 • `RISK_LEVERAGE`：槓桿倍數
 • `MARGIN_TYPE`：保證金模式，`"CROSSED"`（全倉）或 `"ISOLATED"`（逐倉）
-• `TP_STRATEGY`：止盈策略，至少 1 組、至多 3 組，PERCENT 總計不超過 100
+• `LONG_TP_STRATEGY`：多頭止盈策略，至少 1 組、至多 3 組，PERCENT 總計不超過 100
   ‣ `RR_RATIO`：止盈盈虧比（1 = 1R，1.5 = 1.5R）
   ‣ `PERCENT`：達到該盈虧比時平倉的部位比例 (%)，最後一組會自動全數平倉
+• `SHORT_TP_STRATEGY`：空頭止盈策略（選填，格式同上；不填則沿用多頭止盈策略）
 • `LONG_ORDER_LIMIT`：同時持有多單部位數上限
 • `SHORT_ORDER_LIMIT`：同時持有空單部位數上限
 • `ADD_SAME_SYMBOL`：同幣種已有倉位時，是否再次開單（加倉）
@@ -317,7 +322,10 @@ CONFIG_TEMPLATE_TEXT = """\
     "RISK_AMOUNT": 0.1,
     "RISK_LEVERAGE": 20,
     "MARGIN_TYPE": "CROSSED",
-    "TP_STRATEGY": [
+    "LONG_TP_STRATEGY": [
+        { "RR_RATIO": 1.5, "PERCENT": 50 }
+    ],
+    "SHORT_TP_STRATEGY": [
         { "RR_RATIO": 1.5, "PERCENT": 50 }
     ],
     "LONG_ORDER_LIMIT": 10,
@@ -394,11 +402,14 @@ def validate_config(data: dict) -> tuple[bool, list[str]]:
         if total_pct > 100:
             errors.append(f"`{field}` PERCENT 總和不可超過 100（目前：{total_pct}）")
 
-    tp = data.get("TP_STRATEGY")
+    tp = data.get("LONG_TP_STRATEGY")
     if not isinstance(tp, list) or not (1 <= len(tp) <= 3):
-        errors.append("`TP_STRATEGY` 必須包含 1 ~ 3 組止盈設定")
+        errors.append("`LONG_TP_STRATEGY` 必須包含 1 ~ 3 組止盈設定")
     else:
-        _validate_tp("TP_STRATEGY")
+        _validate_tp("LONG_TP_STRATEGY")
+
+    if data.get("SHORT_TP_STRATEGY") is not None:
+        _validate_tp("SHORT_TP_STRATEGY")
 
     long_order_limit = data.get("LONG_ORDER_LIMIT")
     if not isinstance(long_order_limit, int) or long_order_limit <= 0:

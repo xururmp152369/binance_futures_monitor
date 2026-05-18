@@ -1,4 +1,4 @@
-"""市價開倉 + -1007 重試邏輯測試"""
+"""市價開倉 + -1007 重試 + 多空方向邏輯測試"""
 
 import asyncio
 from unittest.mock import AsyncMock, patch
@@ -11,21 +11,28 @@ from app.trading.order_manager import _place_orders_for_user
 # ─── 共用設定 ──────────────────────────────────────────────────────────────────
 
 _CFG = {
-    "API_KEY":          "test_key",
-    "SECRET_KEY":       "test_secret",
-    "STRATEGY":         ["TYPE1"],
-    "RISK_TYPE":        0,
-    "RISK_AMOUNT":      100.0,
-    "RISK_LEVERAGE":    10,
-    "TP_STRATEGY":      [{"RR_RATIO": 2.0, "PERCENT": 50}],
+    "API_KEY":           "test_key",
+    "SECRET_KEY":        "test_secret",
+    "STRATEGY":          ["long_breakout"],
+    "RISK_TYPE":         0,
+    "RISK_AMOUNT":       100.0,
+    "RISK_LEVERAGE":     10,
+    "LONG_TP_STRATEGY":  [{"RR_RATIO": 2.0, "PERCENT": 50}],
     "LONG_ORDER_LIMIT":  10,
-    "ADD_SAME_SYMBOL":  False,
-    "SYMBOL_BLACKLIST": [],
-    "ENABLED":          True,
+    "ADD_SAME_SYMBOL":   False,
+    "SYMBOL_BLACKLIST":  [],
+    "ENABLED":           True,
 }
 
-_SIGNAL = {"type": "type1", "close": 100.0, "stop_loss": 95.0}
-_SYMBOL = "BTCUSDT"
+_CFG_SHORT = {
+    **_CFG,
+    "STRATEGY":          ["short_bounce"],
+    "SHORT_ORDER_LIMIT": 5,
+}
+
+_SIGNAL_LONG  = {"type": "type1", "close": 100.0, "stop_loss": 95.0}
+_SIGNAL_SHORT = {"type": "type2", "close": 100.0, "stop_loss": 105.0}
+_SYMBOL       = "BTCUSDT"
 
 
 @pytest.fixture(autouse=True)
@@ -52,12 +59,12 @@ def run(coro):
     return asyncio.run(coro)
 
 
-# ─── 測試案例 ──────────────────────────────────────────────────────────────────
-
 def _get_order_kwargs(client, call_index: int) -> dict:
     """取得第 N 次 futures_create_order 呼叫的 kwargs。"""
     return client.futures_create_order.call_args_list[call_index].kwargs
 
+
+# ─── 多頭開倉 ──────────────────────────────────────────────────────────────────
 
 def test_normal_success():
     """正常路徑：市價開倉成功，SL 用 closePosition，單筆 TP 用 closePosition。"""
@@ -68,25 +75,46 @@ def test_normal_success():
     )
     with patch("app.trading.order_manager.AsyncClient") as cls:
         cls.create = AsyncMock(return_value=client)
-        run(_place_orders_for_user("test_account", _CFG, _SYMBOL, _SIGNAL))
+        run(_place_orders_for_user("test_account", _CFG, _SYMBOL, _SIGNAL_LONG))
 
     # 市價開倉 1 + 止損 1 + 止盈 1 = 3
     assert client.futures_create_order.call_count == 3
 
+    entry_kwargs = _get_order_kwargs(client, 0)
+    assert entry_kwargs["side"] == "BUY"
+
     sl_kwargs = _get_order_kwargs(client, 1)
     assert sl_kwargs["type"] == "STOP_MARKET"
+    assert sl_kwargs["side"] == "SELL"
     assert sl_kwargs.get("closePosition") is True
     assert "quantity" not in sl_kwargs
 
     tp_kwargs = _get_order_kwargs(client, 2)
     assert tp_kwargs["type"] == "TAKE_PROFIT_MARKET"
+    assert tp_kwargs["side"] == "SELL"
     assert tp_kwargs.get("closePosition") is True
     assert "quantity" not in tp_kwargs
 
 
+def test_long_tp_price_above_entry():
+    """多頭止盈價格應高於入場價。"""
+    captured = []
+    async def record_order(**kwargs):
+        captured.append(kwargs)
+        return {"avgPrice": "100.0", "orderId": 1}
+
+    client = _make_client(futures_create_order=AsyncMock(side_effect=record_order))
+    with patch("app.trading.order_manager.AsyncClient") as cls:
+        cls.create = AsyncMock(return_value=client)
+        run(_place_orders_for_user("test_account", _CFG, _SYMBOL, _SIGNAL_LONG))
+
+    tp_kwargs = captured[2]
+    assert tp_kwargs["stopPrice"] > 100.0
+
+
 def test_multi_tp_last_is_close_position():
     """多筆 TP：非最後一筆用 quantity+reduceOnly，最後一筆用 closePosition。"""
-    cfg_multi = {**_CFG, "TP_STRATEGY": [
+    cfg_multi = {**_CFG, "LONG_TP_STRATEGY": [
         {"RR_RATIO": 1.0, "PERCENT": 50},
         {"RR_RATIO": 2.0, "PERCENT": 50},
     ]}
@@ -97,7 +125,7 @@ def test_multi_tp_last_is_close_position():
     )
     with patch("app.trading.order_manager.AsyncClient") as cls:
         cls.create = AsyncMock(return_value=client)
-        run(_place_orders_for_user("test_account", cfg_multi, _SYMBOL, _SIGNAL))
+        run(_place_orders_for_user("test_account", cfg_multi, _SYMBOL, _SIGNAL_LONG))
 
     # 市價1 + 止損1 + 止盈2 = 4
     assert client.futures_create_order.call_count == 4
@@ -111,6 +139,150 @@ def test_multi_tp_last_is_close_position():
     assert tp2_kwargs.get("closePosition") is True
     assert "quantity" not in tp2_kwargs
 
+
+# ─── 空頭開倉 ──────────────────────────────────────────────────────────────────
+
+def test_short_signal_uses_sell_entry():
+    """type2 訊號 → 市價 SELL 開倉，止損/止盈用 BUY。"""
+    client = _make_client(
+        futures_create_order=AsyncMock(
+            return_value={"avgPrice": "100.0", "orderId": 1}
+        )
+    )
+    with patch("app.trading.order_manager.AsyncClient") as cls:
+        cls.create = AsyncMock(return_value=client)
+        run(_place_orders_for_user("test_account", _CFG_SHORT, _SYMBOL, _SIGNAL_SHORT))
+
+    assert client.futures_create_order.call_count == 3
+
+    entry_kwargs = _get_order_kwargs(client, 0)
+    assert entry_kwargs["side"] == "SELL"
+
+    sl_kwargs = _get_order_kwargs(client, 1)
+    assert sl_kwargs["side"] == "BUY"
+
+    tp_kwargs = _get_order_kwargs(client, 2)
+    assert tp_kwargs["side"] == "BUY"
+
+
+def test_short_tp_price_below_entry():
+    """空頭止盈價格應低於入場價（fill_price - sl_dist * rr）。"""
+    captured = []
+    async def record_order(**kwargs):
+        captured.append(kwargs)
+        return {"avgPrice": "100.0", "orderId": 1}
+
+    client = _make_client(futures_create_order=AsyncMock(side_effect=record_order))
+    with patch("app.trading.order_manager.AsyncClient") as cls:
+        cls.create = AsyncMock(return_value=client)
+        run(_place_orders_for_user("test_account", _CFG_SHORT, _SYMBOL, _SIGNAL_SHORT))
+
+    tp_kwargs = captured[2]
+    assert tp_kwargs["stopPrice"] < 100.0
+
+
+def test_short_uses_short_tp_strategy():
+    """SHORT_TP_STRATEGY 存在時應使用它，而非 LONG_TP_STRATEGY。"""
+    cfg = {
+        **_CFG_SHORT,
+        "LONG_TP_STRATEGY":  [{"RR_RATIO": 3.0, "PERCENT": 100}],
+        "SHORT_TP_STRATEGY": [{"RR_RATIO": 1.5, "PERCENT": 100}],
+    }
+    captured = []
+    async def record_order(**kwargs):
+        captured.append(kwargs)
+        return {"avgPrice": "100.0", "orderId": 1}
+
+    client = _make_client(futures_create_order=AsyncMock(side_effect=record_order))
+    with patch("app.trading.order_manager.AsyncClient") as cls:
+        cls.create = AsyncMock(return_value=client)
+        run(_place_orders_for_user("test_account", cfg, _SYMBOL, _SIGNAL_SHORT))
+
+    # sl_dist = |100 - 105| = 5，SHORT_TP rr=1.5 → tp = 100 - 5*1.5 = 92.5
+    tp_price = captured[2]["stopPrice"]
+    assert abs(tp_price - 92.5) < 0.01
+
+
+def test_short_falls_back_to_long_tp_strategy():
+    """SHORT_TP_STRATEGY 未設定時，空頭應 fallback 使用 LONG_TP_STRATEGY。"""
+    cfg = {**_CFG_SHORT}  # 沒有 SHORT_TP_STRATEGY
+    captured = []
+    async def record_order(**kwargs):
+        captured.append(kwargs)
+        return {"avgPrice": "100.0", "orderId": 1}
+
+    client = _make_client(futures_create_order=AsyncMock(side_effect=record_order))
+    with patch("app.trading.order_manager.AsyncClient") as cls:
+        cls.create = AsyncMock(return_value=client)
+        run(_place_orders_for_user("test_account", cfg, _SYMBOL, _SIGNAL_SHORT))
+
+    # 應仍有止盈單（使用 LONG_TP_STRATEGY rr=2.0 → tp = 100 - 5*2 = 90.0）
+    assert client.futures_create_order.call_count == 3
+    tp_price = captured[2]["stopPrice"]
+    assert abs(tp_price - 90.0) < 0.01
+
+
+def test_short_uses_short_order_limit():
+    """SHORT_ORDER_LIMIT 限制空單部位數，達上限時拒絕。"""
+    cfg = {**_CFG_SHORT, "SHORT_ORDER_LIMIT": 1}
+    client = _make_client(
+        futures_position_information=AsyncMock(return_value=[
+            {"symbol": "ETHUSDT", "positionAmt": "-1.0"},  # 已有一筆空單
+        ]),
+    )
+    with patch("app.trading.order_manager.AsyncClient") as cls:
+        cls.create = AsyncMock(return_value=client)
+        ok, msg = run(_place_orders_for_user("test_account", cfg, _SYMBOL, _SIGNAL_SHORT))
+
+    assert ok is False
+    assert "已達上限" in msg
+    assert "空單" in msg
+
+
+def test_short_add_on_detects_negative_position():
+    """空單加倉：symbol 已有負數 positionAmt 時，視為同方向持倉加倉。"""
+    cfg = {**_CFG_SHORT, "ADD_SAME_SYMBOL": True}
+    client = _make_client(
+        futures_position_information=AsyncMock(return_value=[
+            {"symbol": _SYMBOL, "positionAmt": "-0.5"},  # 已有空單
+        ]),
+        futures_create_order=AsyncMock(
+            return_value={"avgPrice": "100.0", "orderId": 1}
+        ),
+    )
+    with patch("app.trading.order_manager.AsyncClient") as cls:
+        cls.create = AsyncMock(return_value=client)
+        ok, _ = run(_place_orders_for_user("test_account", cfg, _SYMBOL, _SIGNAL_SHORT))
+
+    assert ok is True
+
+
+# ─── 策略比對 ──────────────────────────────────────────────────────────────────
+
+def test_strategy_not_in_config_returns_none():
+    """訊號策略代號不在使用者 STRATEGY 清單中 → 回傳 None（略過）。"""
+    cfg_long_only = {**_CFG, "STRATEGY": ["long_breakout"]}
+    client = _make_client()
+    with patch("app.trading.order_manager.AsyncClient") as cls:
+        cls.create = AsyncMock(return_value=client)
+        result = run(_place_orders_for_user("test_account", cfg_long_only, _SYMBOL, _SIGNAL_SHORT))
+
+    assert result is None
+    assert client.futures_create_order.call_count == 0
+
+
+def test_unknown_signal_type_returns_none():
+    """未知訊號類型 → 回傳 None（略過）。"""
+    bad_signal = {"type": "type99", "close": 100.0, "stop_loss": 95.0}
+    client = _make_client()
+    with patch("app.trading.order_manager.AsyncClient") as cls:
+        cls.create = AsyncMock(return_value=client)
+        result = run(_place_orders_for_user("test_account", _CFG, _SYMBOL, bad_signal))
+
+    assert result is None
+
+
+# ─── -1007 重試邏輯 ────────────────────────────────────────────────────────────
 
 def test_1007_query_shows_filled():
     """-1007 逾時後查詢訂單 = FILLED，不重新開倉，繼續設 SL/TP。"""
@@ -128,7 +300,7 @@ def test_1007_query_shows_filled():
     )
     with patch("app.trading.order_manager.AsyncClient") as cls:
         cls.create = AsyncMock(return_value=client)
-        run(_place_orders_for_user("test_account", _CFG, _SYMBOL, _SIGNAL))
+        run(_place_orders_for_user("test_account", _CFG, _SYMBOL, _SIGNAL_LONG))
 
     assert client.futures_create_order.call_count == 3  # 開倉1 + 止損1 + 止盈1
     assert client.futures_get_order.call_count == 1
@@ -151,7 +323,7 @@ def test_1007_retry_succeeds_on_second_attempt():
     )
     with patch("app.trading.order_manager.AsyncClient") as cls:
         cls.create = AsyncMock(return_value=client)
-        run(_place_orders_for_user("test_account", _CFG, _SYMBOL, _SIGNAL))
+        run(_place_orders_for_user("test_account", _CFG, _SYMBOL, _SIGNAL_LONG))
 
     assert client.futures_create_order.call_count == 4  # 開倉2 + 止損1 + 止盈1
     assert client.futures_get_order.call_count == 1
@@ -169,7 +341,7 @@ def test_1007_all_5_retries_exhausted():
     )
     with patch("app.trading.order_manager.AsyncClient") as cls:
         cls.create = AsyncMock(return_value=client)
-        run(_place_orders_for_user("test_account", _CFG, _SYMBOL, _SIGNAL))
+        run(_place_orders_for_user("test_account", _CFG, _SYMBOL, _SIGNAL_LONG))
 
     assert client.futures_create_order.call_count == 5
     assert client.futures_get_order.call_count == 5
@@ -184,7 +356,7 @@ def test_other_error_aborts_immediately():
     )
     with patch("app.trading.order_manager.AsyncClient") as cls:
         cls.create = AsyncMock(return_value=client)
-        run(_place_orders_for_user("test_account", _CFG, _SYMBOL, _SIGNAL))
+        run(_place_orders_for_user("test_account", _CFG, _SYMBOL, _SIGNAL_LONG))
 
     assert client.futures_create_order.call_count == 1  # 只嘗試 1 次
 
@@ -204,7 +376,7 @@ def test_add_on_bypasses_limit_when_allowed():
     )
     with patch("app.trading.order_manager.AsyncClient") as cls:
         cls.create = AsyncMock(return_value=client)
-        ok, _ = run(_place_orders_for_user("test_account", cfg_add, _SYMBOL, _SIGNAL))
+        ok, _ = run(_place_orders_for_user("test_account", cfg_add, _SYMBOL, _SIGNAL_LONG))
 
     assert ok is True
 
@@ -219,7 +391,7 @@ def test_add_on_blocked_when_not_allowed():
     )
     with patch("app.trading.order_manager.AsyncClient") as cls:
         cls.create = AsyncMock(return_value=client)
-        ok, msg = run(_place_orders_for_user("test_account", cfg_no_add, _SYMBOL, _SIGNAL))
+        ok, msg = run(_place_orders_for_user("test_account", cfg_no_add, _SYMBOL, _SIGNAL_LONG))
 
     assert ok is False
     assert "不允許加倉" in msg
@@ -235,7 +407,7 @@ def test_new_position_blocked_at_limit():
     )
     with patch("app.trading.order_manager.AsyncClient") as cls:
         cls.create = AsyncMock(return_value=client)
-        ok, msg = run(_place_orders_for_user("test_account", cfg_limit, _SYMBOL, _SIGNAL))
+        ok, msg = run(_place_orders_for_user("test_account", cfg_limit, _SYMBOL, _SIGNAL_LONG))
 
     assert ok is False
     assert "已達上限" in msg
@@ -254,7 +426,6 @@ def test_opposite_direction_does_not_count_as_add_on():
     )
     with patch("app.trading.order_manager.AsyncClient") as cls:
         cls.create = AsyncMock(return_value=client)
-        ok, _ = run(_place_orders_for_user("test_account", cfg, _SYMBOL, _SIGNAL))
+        ok, _ = run(_place_orders_for_user("test_account", cfg, _SYMBOL, _SIGNAL_LONG))
 
     assert ok is True  # 多單上限未達（0/3），應允許開倉
-
