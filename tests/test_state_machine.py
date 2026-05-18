@@ -259,20 +259,62 @@ class TestMethodB:
         return c
 
     def test_stronger_candle_triggers_method_b(self):
-        """TRACKING 中出現漲幅 > 前觸發 K + 1% 且帶量的 K → Method B，底部上移。"""
-        bottom, old_top, _ = trigger_long_tracking(SYM, TS0, gain_pct=4.0)
-        # 前觸發 K 漲幅 = 4%，需要 > 4% + 1% = > 5%，使用 6%
-        # baseline 現在有 12 根(100) + 1 根觸發 K(400) = 13 根，avg≈125，門檻≈375
-        ts2   = TS0 + _4H_MS
-        open2 = 100.0
-        close2 = round(open2 * 1.06, 8)   # +6%
-        high2  = round(close2 * 1.002, 8)
-        low2   = round(open2 * 0.998, 8)
-        self._append_and_feed(ts2, open2, high2, low2, close2, 400.0)
+        """READY 中出現漲幅 > 前觸發 K + 1% 且帶量的 K → Method B，底部上移至新 low。"""
+        trigger_long_tracking(SYM, TS0, base=100.0, gain_pct=4.0)
+        old_bottom = _st()["consolidation_low"]   # ≈ 99.8
+        ts_start   = _st()["consolidation_start_ts"]
+
+        # 先延伸頂部到 150，確保 Method B 的 high2 不觸發延伸邏輯（延伸後計時重置）
+        ts_ext = TS0 + _4H_MS
+        ext_c  = (ts_ext, 105.0, 150.0, 104.0, 149.8, 50.0)
+        models.symbol_state[SYM]["kline_4h_ohlc"].append(ext_c)
+        on_new_4h_candle(SYM, ext_c)
+
+        # 延伸後等 13h → READY
+        ts_ready = ts_ext + int(13 * 3600 * 1000)
+        ready_c  = (ts_ready, 149.0, 149.5, 148.5, 149.0, 50.0)
+        models.symbol_state[SYM]["kline_4h_ohlc"].append(ready_c)
+        on_new_4h_candle(SYM, ready_c)
+        assert _st()["phase"] == StrategyPhase.READY
+
+        # Method B 觸發 K：open=101（low ≈ 100.8 ≠ old_bottom 99.8），gain=6%，high < 150
+        ts2    = ts_ready + _4H_MS
+        open2  = 101.0
+        close2 = round(open2 * 1.06, 8)   # 107.06
+        high2  = round(close2 * 1.002, 8) # 107.274 < 150
+        low2   = round(open2 * 0.998, 8)  # 100.798 ≠ old_bottom
+        assert high2 < 150.0
+        assert low2 != pytest.approx(old_bottom, rel=1e-3)
+
+        self._append_and_feed(ts2, open2, high2, low2, close2, 1000.0)
 
         st = _st()
-        assert st["phase"] == StrategyPhase.TRACKING
+        assert st["phase"] == StrategyPhase.TRACKING  # Method B 重置計時，退回 TRACKING
         assert st["consolidation_low"] == pytest.approx(low2, rel=1e-6)
+
+    def test_method_b_not_triggered_in_tracking_phase(self):
+        """TRACKING（非 READY）時，即使出現更強觸發 K → Method B 不觸發，底部不變。"""
+        trigger_long_tracking(SYM, TS0, base=100.0, gain_pct=4.0)
+        old_bottom = _st()["consolidation_low"]
+        assert _st()["phase"] == StrategyPhase.TRACKING
+
+        # 先延伸頂部，確保後續 K 不走延伸邏輯
+        ts_ext = TS0 + _4H_MS
+        ext_c  = (ts_ext, 105.0, 150.0, 104.0, 149.8, 50.0)
+        models.symbol_state[SYM]["kline_4h_ohlc"].append(ext_c)
+        on_new_4h_candle(SYM, ext_c)
+
+        # 出現漲幅 6% > 4%+1% 的強觸發 K，但在 TRACKING → Method B 不應觸發
+        ts2    = TS0 + 2 * _4H_MS
+        open2  = 101.0
+        close2 = round(open2 * 1.06, 8)
+        high2  = round(close2 * 1.002, 8)  # < 150，不觸延伸
+        low2   = round(open2 * 0.998, 8)   # 100.798 ≠ old_bottom
+        assert low2 != pytest.approx(old_bottom, rel=1e-3)
+        self._append_and_feed(ts2, open2, high2, low2, close2, 1000.0)
+
+        # 底部應維持不變（Method B 未觸發）
+        assert _st()["consolidation_low"] == pytest.approx(old_bottom, rel=1e-6)
 
     def test_method_b_gain_advantage_boundary(self):
         """漲幅剛好等於前觸發 K + 1%（不超過）→ 不觸發 Method B。"""
@@ -310,6 +352,48 @@ class TestMethodB:
         assert _st()["consolidation_high"] == pytest.approx(ext_top, rel=1e-6)
         # consolidation_low 應更新為 Method B 的新底部
         assert _st()["consolidation_low"] == pytest.approx(low3, rel=1e-6)
+
+    def test_method_b_relaxed_threshold_complete_reset(self):
+        """原觸發 K 漲幅 > METHOD_B_RELAXED_THRESHOLD(10%) → READY 時任何符合觸發條件的 K 即完整重置。"""
+        # 觸發 K 漲幅 11% > Relaxed Threshold(10%)
+        trigger_long_tracking(SYM, TS0, base=100.0, gain_pct=11.0)
+        ts_start = _st()["consolidation_start_ts"]
+
+        # 等 13h → READY
+        ts_ready = TS0 + int(13 * 3600 * 1000)
+        old_high = _st()["consolidation_high"]
+        self._append_and_feed(ts_ready, old_high * 0.99, old_high * 0.999, old_high * 0.985, old_high * 0.995, 50.0)
+        assert _st()["phase"] == StrategyPhase.READY
+
+        # 延伸頂部到 150，讓後續 Relaxed K 不觸延伸邏輯（延伸後計時重置 → 回 TRACKING）
+        ts_ext = ts_ready + _4H_MS
+        ext_c  = (ts_ext, 112.0, 150.0, 111.0, 149.8, 50.0)
+        models.symbol_state[SYM]["kline_4h_ohlc"].append(ext_c)
+        on_new_4h_candle(SYM, ext_c)
+
+        # 再等 13h → 回到 READY
+        ts_ready2 = ts_ext + int(13 * 3600 * 1000)
+        ready2_c  = (ts_ready2, 149.0, 149.5, 148.5, 149.0, 50.0)
+        models.symbol_state[SYM]["kline_4h_ohlc"].append(ready2_c)
+        on_new_4h_candle(SYM, ready2_c)
+        assert _st()["phase"] == StrategyPhase.READY
+        assert _st()["consolidation_high"] == pytest.approx(150.0, rel=1e-6)
+
+        # Relaxed 重置 K：gain=4%（< 11%+1%，一般 Method B 不觸發），Relaxed 直接完整重置
+        ts2    = ts_ready2 + _4H_MS
+        open2  = 101.0
+        close2 = round(open2 * 1.04, 8)   # 105.04
+        high2  = round(close2 * 1.002, 8) # 105.251 < 150 → 不觸延伸
+        low2   = round(open2 * 0.998, 8)  # 100.798 ≠ old_bottom(99.8)
+        assert high2 < 150.0
+        assert low2 != pytest.approx(99.8, rel=1e-3)
+        self._append_and_feed(ts2, open2, high2, low2, close2, 1000.0)
+
+        st = _st()
+        # 完整重置（is_method_b=False）：底部和頂部都更新為新 K 的值
+        assert st["consolidation_low"]  == pytest.approx(low2,  rel=1e-6)
+        assert st["consolidation_high"] == pytest.approx(high2, rel=1e-6)
+        assert st["pump_candle_open"]   == pytest.approx(open2, rel=1e-6)
 
     def test_method_b_volume_insufficient_no_trigger(self):
         """量能不足（< baseline × 3）→ 即使漲幅超標也不觸發 Method B。"""
@@ -478,6 +562,40 @@ class TestType1Signal:
         result = on_new_15m_candle(SYM, candle)
         assert result is not None
         assert result["stop_loss"] == pytest.approx(top * 0.978, rel=1e-6)
+
+    def test_stop_loss_does_not_cross_4h_boundary(self):
+        """止損回掃不跨越當前 4h K 棒的起點：4h 邊界之前的放量根不計入。"""
+        self._setup_ready(base_volume=100.0)
+        top = _st()["consolidation_high"]
+
+        # 突破 K 在 4h 邊界 TS0 + 14h
+        ts_candle    = TS0 + 14 * 3600 * 1000
+        current_4h_open_ms = (ts_candle // _4H_MS) * _4H_MS
+
+        # [-3]: 在邊界之前（另一個 4h），vol=500，low=top*0.960（不應被計入）
+        # [-2]: 在邊界之後，vol=500，low=top*0.985
+        ts_before = current_4h_open_ms - _4H_MS          # 上一個 4h 的某根 15m
+        ts_after  = current_4h_open_ms + 15 * 60 * 1000  # 當前 4h 的第二根 15m
+
+        total = 200
+        d = deque(maxlen=total)
+        base_ts = 1_700_000_000_000
+        # 填滿 base 根
+        for i in range(total - 3):
+            d.append((base_ts + i * 900_000, 100.0, 101.0, 99.0, 100.5, 100.0))
+        # 邊界前（上一個 4h）
+        d.append((ts_before, 100.0, 101.0, top * 0.960, 100.5, 500.0))
+        # 邊界後（當前 4h）
+        d.append((ts_after,  100.0, 101.0, top * 0.985, 100.5, 500.0))
+        # 最後一根（突破 K，被 [-193:-1] 排除）
+        d.append((ts_candle, 100.0, 101.0, top * 0.992, 100.5, 100.0))
+        setup_symbol_state(SYM, kline_15m_ohlc=d)
+
+        candle = (ts_candle, top, top * 1.02, top * 0.992, top * 1.01, 500.0)
+        result = on_new_15m_candle(SYM, candle)
+        assert result is not None
+        # 邊界前的 top*0.960 不應被計入，stop_loss 應是 top*0.985
+        assert result["stop_loss"] == pytest.approx(top * 0.985, rel=1e-6)
 
     def test_stop_loss_chain_breaks_at_low_volume(self):
         """連續放量鏈中間遇低量根 → 停止回掃，不延伸到更前方。"""

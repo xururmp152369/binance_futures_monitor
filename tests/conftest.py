@@ -9,9 +9,11 @@ _4H_MS = 4 * 3600 * 1000
 def reset_global_state():
     """每個測試前後清空全域狀態。"""
     models.strategy_state.clear()
+    models.short_strategy_state.clear()
     models.symbol_state.clear()
     yield
     models.strategy_state.clear()
+    models.short_strategy_state.clear()
     models.symbol_state.clear()
 
 

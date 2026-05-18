@@ -160,11 +160,11 @@ TRACKING
  │ 廢棄：4h K 實體低點 min(open,close) < consolidation_low → IDLE（即時掃描亦觸發）
  │       → 同時觸發空頭策略進入 SHORT_WATCHING（僅 4h 收盤廢棄，不含即時掃描）
  │ 延伸：4h K high > consolidation_high → 更新 consolidation_high，重置 12h 計時
- │ Method B：盤整內出現符合觸發條件的 K，且其漲幅 > pump_candle 漲幅 + 1% → 完整重置觸發 K
  │ 進展：最後一次創新高後盤整 >= CONSOLIDATION_MIN_HOURS
  ▼
 READY
- │ 廢棄：同上（創新高退回 TRACKING；Method B 同樣適用）
+ │ 廢棄：同上（創新高退回 TRACKING）
+ │ Method B：盤整內出現符合觸發條件的 K，且其漲幅 > pump_candle 漲幅 + 1% → 完整重置觸發 K
  └─ 每根 15m 收盤 → Type 1 帶量突破（做多）
 ```
 
