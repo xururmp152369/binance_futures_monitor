@@ -9,7 +9,7 @@ from app.setting.config import (
     SHORT_BOUNCE_VOLUME_MAX, TRIGGER_VOLUME_MULT, BREAKOUT_BODY_PCT,
     SHORT_ENTRY_VOLUME_MIN,
 )
-from app.strategy.short_bounce import ShortPhase, enter_short_watching
+from app.strategy.short_bounce import ShortPhase, enter_short_watching, check_short_invalidation_realtime
 from app.strategy.state_machine import on_new_4h_candle, on_new_15m_candle
 from app.strategy.analysis_utils import calc_ema
 from tests.conftest import (
@@ -449,6 +449,19 @@ class TestType2Signal:
         candle = (ts_candle, ELOW, ELOW, close_, close_, 200.0)
         assert on_new_15m_candle(SYM, candle) is None
 
+    def test_cooldown_prevents_repeat_signal(self):
+        """Type 2 訊號觸發後，STRATEGY_COOLDOWN 冷卻期內再次觸發 → 不發出訊號。"""
+        self._setup_ready_with_15m(base_volume=100.0)
+        close_ = ELOW * 0.99
+        candle1 = (TS0 + 2 * _4H_MS, ELOW, ELOW, close_, close_, 200.0)
+        result1 = on_new_15m_candle(SYM, candle1)
+        assert result1 is not None, "第一次應觸發"
+
+        # 冷卻期內，15m 後再發同樣跌破 K
+        candle2 = (TS0 + 2 * _4H_MS + 15 * 60 * 1000, ELOW, ELOW, close_, close_, 200.0)
+        result2 = on_new_15m_candle(SYM, candle2)
+        assert result2 is None, "冷卻期內不應重複觸發"
+
     def test_signal_fields_complete(self):
         """Type 2 訊號 dict 包含必要欄位。"""
         self._setup_ready_with_15m(base_volume=100.0)
@@ -497,3 +510,50 @@ class TestOrchestratorIntegration:
         check_invalidation_realtime(SYM)
 
         assert _sst().get("phase", ShortPhase.IDLE) == ShortPhase.IDLE
+
+
+# ─── 即時廢棄掃描 ─────────────────────────────────────────────────────────────
+
+class TestRealtimeInvalidation:
+    """check_short_invalidation_realtime() 直接驗證。"""
+
+    def _set_last_price(self, price: float):
+        if SYM not in models.symbol_state:
+            models.symbol_state[SYM] = {
+                "last_price":     price,
+                "kline_15m_ohlc": deque(maxlen=200),
+                "kline_4h_ohlc":  deque(maxlen=200),
+            }
+        else:
+            models.symbol_state[SYM]["last_price"] = price
+
+    def test_watching_price_above_resistance_resets(self):
+        """WATCHING 狀態：markPrice > short_resistance → 重置為 IDLE，回傳 True。"""
+        _setup_watching()
+        self._set_last_price(RES * 1.01)
+        result = check_short_invalidation_realtime(SYM)
+        assert result is True
+        assert _sst()["phase"] == ShortPhase.IDLE
+
+    def test_ready_price_above_resistance_resets(self):
+        """SHORT_READY 狀態：markPrice > short_resistance → 重置為 IDLE，回傳 True。"""
+        _setup_watching()
+        _setup_4h_baseline(n=14)
+        ts = TS0 + _4H_MS
+        c = _make_rejection_candle(ts, RES)
+        models.symbol_state[SYM]["kline_4h_ohlc"].append(c)
+        on_new_4h_candle(SYM, c)
+        assert _sst()["phase"] == ShortPhase.READY
+
+        self._set_last_price(RES * 1.01)
+        result = check_short_invalidation_realtime(SYM)
+        assert result is True
+        assert _sst()["phase"] == ShortPhase.IDLE
+
+    def test_price_at_or_below_resistance_no_reset(self):
+        """markPrice ≤ short_resistance → 狀態不變，回傳 False。"""
+        _setup_watching()
+        self._set_last_price(RES * 0.99)
+        result = check_short_invalidation_realtime(SYM)
+        assert result is False
+        assert _sst()["phase"] == ShortPhase.WATCHING
