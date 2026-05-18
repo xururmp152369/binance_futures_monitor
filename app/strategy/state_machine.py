@@ -285,7 +285,7 @@ def on_new_4h_candle(
     if is_trigger:
         if st["phase"] == StrategyPhase.IDLE:
             _apply_trigger(st, symbol, open_, close, high, low, current_ts, gain_pct, vol_ratio, direction)
-        else:
+        elif st["phase"] == StrategyPhase.READY:
             prev_gain = _pump_gain_pct(st, direction)
             if prev_gain > METHOD_B_RELAXED_THRESHOLD:
                 # 原始觸發 K 漲幅過大，無法被 N+1% 超越：滿足觸發條件即完整重置
