@@ -8,6 +8,7 @@ from ..setting import models
 from ..setting.config import CONSOLIDATION_MIN_HOURS
 from ..strategy.state_machine import StrategyPhase
 from ..strategy.short_bounce import ShortPhase
+from ..strategy.death_cross_short import DeathCrossPhase
 from ..user.user_config import (
     CONFIG_TEMPLATE_TEXT,
     get_user_config,
@@ -351,11 +352,14 @@ def _build_phase_list(phase: StrategyPhase) -> list[tuple[str, dict]]:
 
 
 async def ready_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/ready <long|short> — 列出 READY 狀態幣種。"""
+    """/ready <long|short|dc> — 列出 READY 狀態幣種。"""
     args = context.args
-    if not args or args[0].lower() not in ("long", "short"):
+    if not args or args[0].lower() not in ("long", "short", "dc"):
         await update.message.reply_text(
-            "請加上參數，例如：\n`/ready long`　多頭 READY 清單\n`/ready short`　空頭 SHORT\\_READY 清單",
+            "請加上參數，例如：\n"
+            "`/ready long`　多頭 READY 清單\n"
+            "`/ready short`　空頭 SHORT\\_READY 清單\n"
+            "`/ready dc`　死亡叉 ALERT 清單（48H 窗口，等待 1H 信號）",
             parse_mode="Markdown",
         )
         return
@@ -391,7 +395,7 @@ async def ready_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"  底 `{bot_price}`  頂 `{top_price}`{dist_str}"
             )
 
-    else:  # short
+    elif direction == "short":
         entries = [
             (sym, st) for sym, st in models.short_strategy_state.items()
             if st.get("phase") == ShortPhase.READY
@@ -415,15 +419,43 @@ async def ready_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"  止損 `{rejection_h}`{dist_str}"
             )
 
+    else:  # dc
+        entries = [
+            (sym, st) for sym, st in models.death_cross_state.items()
+            if st.get("phase") == DeathCrossPhase.ALERT
+        ]
+        if not entries:
+            await update.message.reply_text("目前無死亡叉 ALERT 幣種。")
+            return
+        entries.sort(key=lambda x: x[0])
+        lines = [f"📋 *死亡叉 ALERT 清單*（{len(entries)} 個）"]
+        for i, (sym, st) in enumerate(entries, 1):
+            alert_time   = st.get("alert_time") or 0
+            close_t0     = st.get("close_t0") or 0
+            entry_count  = st.get("entry_count", 0)
+            elapsed_hrs  = (now - alert_time) / 3600 if alert_time else 0
+            last_price   = models.symbol_state.get(sym, {}).get("last_price")
+            dist_str     = ""
+            if last_price and close_t0:
+                dist_pct = (last_price / close_t0 - 1) * 100
+                dist_str = f"  距 T0 `{dist_pct:+.1f}%`"
+            lines.append(
+                f"{i}. `{sym}.P`  T0收盤 `{_fmt_price(close_t0)}`"
+                f"  進場 {entry_count}/2  窗口已過 {elapsed_hrs:.0f}hr/48hr{dist_str}"
+            )
+
     await send_chunked(update.message, lines)
 
 
 async def tracking_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/tracking <long|short> — 列出進行中的多頭 TRACKING 或空頭 SHORT_WATCHING 幣種。"""
+    """/tracking <long|short|dc> — 列出進行中的多頭 TRACKING、空頭 SHORT_WATCHING 或死亡叉 WATCHING 幣種。"""
     args = context.args
-    if not args or args[0].lower() not in ("long", "short"):
+    if not args or args[0].lower() not in ("long", "short", "dc"):
         await update.message.reply_text(
-            "請加上參數，例如：\n`/tracking long`　多頭 TRACKING 清單\n`/tracking short`　空頭 SHORT\\_WATCHING 清單",
+            "請加上參數，例如：\n"
+            "`/tracking long`　多頭 TRACKING 清單\n"
+            "`/tracking short`　空頭 SHORT\\_WATCHING 清單\n"
+            "`/tracking dc`　死亡叉 WATCHING 清單（等待日線跌破 EMA200）",
             parse_mode="Markdown",
         )
         return
@@ -454,7 +486,7 @@ async def tracking_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"  底 `{bot_price}`  頂 `{top_price}`"
             )
 
-    else:  # short
+    elif direction == "short":
         entries = [
             (sym, st) for sym, st in models.short_strategy_state.items()
             if st.get("phase") == ShortPhase.WATCHING
@@ -472,6 +504,21 @@ async def tracking_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{i}. `{sym}.P`  壓力位 `{resistance}`  進場線 `{entry_level}`"
                 f"  觀察中 {watch_hrs:.0f}hr"
             )
+
+    else:  # dc
+        entries = [
+            (sym, st) for sym, st in models.death_cross_state.items()
+            if st.get("phase") == DeathCrossPhase.WATCHING
+        ]
+        if not entries:
+            await update.message.reply_text("目前無死亡叉 WATCHING 幣種。")
+            return
+        entries.sort(key=lambda x: x[0])
+        lines = [f"📋 *死亡叉 WATCHING 清單*（{len(entries)} 個）（等待日線跌破 EMA200）"]
+        for i, (sym, st) in enumerate(entries, 1):
+            last_price = models.symbol_state.get(sym, {}).get("last_price")
+            price_str  = f"  現價 `{_fmt_price(last_price)}`" if last_price else ""
+            lines.append(f"{i}. `{sym}.P`{price_str}")
 
     await send_chunked(update.message, lines)
 
@@ -494,8 +541,10 @@ async def command(update: Update, _context: ContextTypes.DEFAULT_TYPE):
         "📊 策略狀態查詢：\n"
         "/ready long — 多頭 READY 清單（盤整成熟，等待突破）\n"
         "/ready short — 空頭 SHORT_READY 清單（拒絕 K 成立，等待跌破）\n"
+        "/ready dc — 死亡叉 ALERT 清單（48H 窗口，等待 1H 信號）\n"
         "/tracking long — 多頭 TRACKING 清單（盤整進行中）\n"
         "/tracking short — 空頭 SHORT_WATCHING 清單（觀察反彈中）\n"
+        "/tracking dc — 死亡叉 WATCHING 清單（等待日線跌破 EMA200）\n"
     )
 
 
