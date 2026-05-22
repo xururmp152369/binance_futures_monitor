@@ -53,12 +53,14 @@ Binance WebSocket (markPrice + kline_15m/4h)
 
 | 欄位 | 說明 |
 |------|------|
-| `STRATEGY` | 觸發自動下單的策略代號陣列（必填，非空） |
+| `PRD_STRATEGY` | 觸發**正式**自動下單的策略代號陣列（選填；`[]` 停用正式下單） |
+| `DEV_STRATEGY` | 觸發**模擬**自動下單的策略代號陣列（選填；`[]` 停用模擬下單） |
 | `NOTIFY_STRATEGY` | 接收訊號通知的策略代號陣列（選填；`[]` 靜默；欄位不存在則發提醒） |
-| `LONG_TP_STRATEGY` | 多頭止盈策略陣列（必填，1～3 組，格式同舊 `TP_STRATEGY`） |
-| `SHORT_TP_STRATEGY` | 空頭止盈策略陣列（選填；不填則沿用 `LONG_TP_STRATEGY`） |
 | `LONG_ORDER_LIMIT` | 同時持有多單部位數上限（必填正整數） |
 | `SHORT_ORDER_LIMIT` | 同時持有空單部位數上限（選填正整數） |
+
+兩個策略欄位均可同時設定，同一訊號可同時觸發正式與模擬兩筆下單。
+`PRD_STRATEGY` 非空時需填 `PRD_API_KEY`/`PRD_SECRET_KEY`；`DEV_STRATEGY` 非空時需填 `API_KEY`/`SECRET_KEY`。
 
 訊號通知路由（`strategy_alerts.py`）：Type 1 → `"long_breakout"`；Type 2 → `"short_bounce"`。
 公頻 `CHAT_ID` 不受 `NOTIFY_STRATEGY` 限制，永遠收到所有訊號。
@@ -234,7 +236,7 @@ SHORT_READY（就緒，監控 15m 跌破）
 2. **15m 量能 baseline**：用 `kline_15m_ohlc[-193:-1]`（192 根），排除當前未收盤根
 3. **歷史回播**：啟動時 `replay_historical_4h_candles()` 恢復多頭盤整狀態；空頭策略由廢棄事件觸發，不需歷史回播
 4. **廢棄條件即時掃描**：`scan_strategy()` 每 10 秒比對 markPrice；即時廢棄**不觸發**空頭策略，只有 4h 收盤廢棄才觸發
-5. **自動下單模式**：`order_manager.py` 頂部 `USE_TESTNET`，正式上線前須改 `False`
+5. **自動下單模式**：使用者設定 `PRD_STRATEGY` 有值 → `testnet=False`（正式）；`DEV_STRATEGY` 有值 → `testnet=True`（模擬），兩者可同時運行
 6. **廢棄條件用實體**：4h K 廢棄判斷以 `min(open, close)` 為準，下影線不觸發廢棄
 7. **空頭廢棄事件傳遞**：`on_new_4h_candle_long()` 廢棄時回傳事件 dict，由 `state_machine.py` 協調器轉送給 `short_bounce.enter_short_watching()`
 8. **EMA 計算**：`analysis_utils.get_4h_ema()` 使用 `kline_4h_ohlc` 的 close 序列，至少需要 `EMA_LONG_PERIOD`（60）根 K 棒才有效

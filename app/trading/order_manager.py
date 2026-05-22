@@ -55,21 +55,18 @@ async def _get_open_positions(client: AsyncClient) -> list[dict]:
 
 
 async def _place_orders_for_user(
-    account_name: str, cfg: dict, symbol: str, signal: dict
+    account_name: str, cfg: dict, symbol: str, signal: dict, *, use_prd: bool
 ) -> tuple[bool, str] | None:
     """對單一使用者執行自動下單。
 
     回傳：
-      None          → 略過（策略不符 / 黑名單），不發通知
+      None          → 略過（未知訊號類型 / 黑名單），不發通知
       (True,  msg)  → 開倉成功
       (False, msg)  → 開倉失敗，msg 含錯誤說明
     """
-    # 訊號類型 → 策略代號比對
-    raw_type     = signal["type"].lower()
-    strategy_key = _SIGNAL_TO_STRATEGY.get(raw_type)
-    if strategy_key is None:
-        return None
-    if strategy_key not in [s.lower() for s in cfg.get("STRATEGY", [])]:
+    # 未知訊號類型 → 略過
+    raw_type = signal["type"].lower()
+    if _SIGNAL_TO_STRATEGY.get(raw_type) is None:
         return None
 
     # 黑名單檢查 → None = 略過（不通知）
@@ -85,7 +82,6 @@ async def _place_orders_for_user(
     direction_str = "多頭" if is_long else "空頭"
     side_label    = "多單" if is_long else "空單"
 
-    use_prd    = cfg.get("ORDER_MODE", "DEV") == "PRD"
     api_key    = cfg["PRD_API_KEY"]    if use_prd else cfg["API_KEY"]
     api_secret = cfg["PRD_SECRET_KEY"] if use_prd else cfg["SECRET_KEY"]
 
@@ -296,30 +292,44 @@ async def _place_orders_for_user(
             await client.close_connection()
 
 
-async def place_orders_for_all_users(symbol: str, signal: dict) -> dict[int, tuple[bool, str]]:
+async def place_orders_for_all_users(symbol: str, signal: dict) -> dict[int, list[tuple[str, bool, str]]]:
     """遍歷所有使用者設定，對符合條件的使用者在 Binance 期貨自動下單。
 
-    回傳 {chat_id: (success, message)}，供後續對每位使用者發送開單結果通知。
+    回傳 {chat_id: [(env_label, success, message), ...]}，
+    同一 chat_id 可能同時有正式與模擬兩筆結果。
     """
-    tasks:    list = []
-    chat_ids: list[int] = []
+    raw_type     = signal.get("type", "").lower()
+    strategy_key = _SIGNAL_TO_STRATEGY.get(raw_type)
+    if strategy_key is None:
+        return {}
+
+    tasks: list = []
+    keys:  list[tuple[int, str]] = []  # (chat_id, env_label)
+
     for account_name, chat_id, cfg in get_all_trading_configs_with_chat_id():
         if not cfg.get("ENABLED"):
             continue
         if chat_id is None:
             continue
-        tasks.append(_place_orders_for_user(account_name, cfg, symbol, signal))
-        chat_ids.append(chat_id)
+        if strategy_key in [s.lower() for s in cfg.get("PRD_STRATEGY", [])]:
+            tasks.append(_place_orders_for_user(account_name, cfg, symbol, signal, use_prd=True))
+            keys.append((chat_id, "正式"))
+        if strategy_key in [s.lower() for s in cfg.get("DEV_STRATEGY", [])]:
+            tasks.append(_place_orders_for_user(account_name, cfg, symbol, signal, use_prd=False))
+            keys.append((chat_id, "模擬"))
 
     if not tasks:
         return {}
 
     results_raw = await asyncio.gather(*tasks, return_exceptions=True)
-    results: dict[int, tuple[bool, str]] = {}
-    for chat_id, r in zip(chat_ids, results_raw):
+    results: dict[int, list[tuple[str, bool, str]]] = {}
+    for (chat_id, env_label), r in zip(keys, results_raw):
         if isinstance(r, Exception):
             log.error(f"[自動開單] 使用者任務發生未捕捉例外: {r}")
-            results[chat_id] = (False, f"未預期錯誤: {r}")
-        elif r is not None:
-            results[chat_id] = r
+            entry: tuple[str, bool, str] = (env_label, False, f"未預期錯誤: {r}")
+        elif r is None:
+            continue
+        else:
+            entry = (env_label, r[0], r[1])
+        results.setdefault(chat_id, []).append(entry)
     return results

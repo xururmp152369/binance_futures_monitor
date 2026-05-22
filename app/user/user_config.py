@@ -173,10 +173,20 @@ def get_user_config(account_name: str) -> dict | None:
     if "TP_STRATEGY" in cfg and "LONG_TP_STRATEGY" not in cfg:
         cfg["LONG_TP_STRATEGY"] = cfg.pop("TP_STRATEGY")
         save_user_config(account_name, cfg)
-    # 舊策略代號 TYPE1 → long_breakout 自動 migration
-    strategy = cfg.get("STRATEGY", [])
-    if "TYPE1" in strategy:
-        cfg["STRATEGY"] = ["long_breakout" if s == "TYPE1" else s for s in strategy]
+    # 舊策略代號 TYPE1 → long_breakout（涵蓋三個策略欄位）
+    for _field in ("STRATEGY", "PRD_STRATEGY", "DEV_STRATEGY"):
+        _s = cfg.get(_field, [])
+        if "TYPE1" in _s:
+            cfg[_field] = ["long_breakout" if x == "TYPE1" else x for x in _s]
+            save_user_config(account_name, cfg)
+    # 舊設定 STRATEGY + ORDER_MODE → PRD_STRATEGY / DEV_STRATEGY 自動 migration
+    if "STRATEGY" in cfg and "PRD_STRATEGY" not in cfg and "DEV_STRATEGY" not in cfg:
+        _strategy   = cfg.pop("STRATEGY")
+        _order_mode = cfg.pop("ORDER_MODE", "DEV")
+        if _order_mode == "PRD":
+            cfg["PRD_STRATEGY"] = _strategy
+        else:
+            cfg["DEV_STRATEGY"] = _strategy
         save_user_config(account_name, cfg)
     return cfg
 
@@ -285,14 +295,13 @@ CONFIG_TEMPLATE_TEXT = """\
 請複製下方 JSON，填寫後直接傳給我：
 
 *欄位說明：*
-• `API_KEY` / `SECRET_KEY`：模擬帳戶（Testnet）API 金鑰
-• `PRD_API_KEY` / `PRD_SECRET_KEY`：正式帳戶 API 金鑰（ORDER\\_MODE=PRD 時必填）
-• `ORDER_MODE`：下單環境，`"DEV"`（模擬，預設）或 `"PRD"`（正式）
-• `STRATEGY`：觸發*自動開單*的策略
+• `API_KEY` / `SECRET_KEY`：模擬帳戶（Testnet）API 金鑰（DEV\\_STRATEGY 有值時必填）
+• `PRD_API_KEY` / `PRD_SECRET_KEY`：正式帳戶 API 金鑰（PRD\\_STRATEGY 有值時必填）
+• `PRD_STRATEGY`：觸發*正式自動開單*的策略（填 `[]` 停用正式下單）
   ‣ `"long_breakout"`：多頭盤整突破（4h 帶量拉漲 → 盤整 → 15m 帶量突破做多）
   ‣ `"short_bounce"`：空頭跌破反彈123法則（多頭廢棄 → 反彈被壓制 → 15m 帶量跌破做空）
-• `NOTIFY_STRATEGY`：接收*訊號通知*的策略（可與 STRATEGY 不同，不想接收填 `[]`）
-  ‣ 有效值同上，填哪些就收哪些的訊號
+• `DEV_STRATEGY`：觸發*模擬自動開單*的策略（填 `[]` 停用模擬下單，有效值同上）
+• `NOTIFY_STRATEGY`：接收*訊號通知*的策略（不想接收填 `[]`，有效值同上）
 • `RISK_TYPE`：風險計算方式
   ‣ `0`：固定投入金額（RISK\\_AMOUNT × 槓桿 USDT）
   ‣ `1`：固定損失金額（依止損比例換算手數）
@@ -315,8 +324,8 @@ CONFIG_TEMPLATE_TEXT = """\
     "SECRET_KEY": "",
     "PRD_API_KEY": "",
     "PRD_SECRET_KEY": "",
-    "ORDER_MODE": "DEV",
-    "STRATEGY": ["long_breakout"],
+    "PRD_STRATEGY": [],
+    "DEV_STRATEGY": ["long_breakout"],
     "NOTIFY_STRATEGY": ["long_breakout", "short_bounce"],
     "RISK_TYPE": 0,
     "RISK_AMOUNT": 0.1,
@@ -342,23 +351,26 @@ def validate_config(data: dict) -> tuple[bool, list[str]]:
     """驗證使用者設定 dict，回傳 (是否通過, 錯誤訊息列表)。"""
     errors = []
 
-    for key in ("API_KEY", "SECRET_KEY"):
-        if not isinstance(data.get(key), str) or not data[key].strip():
-            errors.append(f"`{key}` 必須為非空字串")
+    prd_strategy = data.get("PRD_STRATEGY", [])
+    dev_strategy = data.get("DEV_STRATEGY", [])
 
-    order_mode = data.get("ORDER_MODE", "DEV")
-    if order_mode not in ("PRD", "DEV"):
-        errors.append("`ORDER_MODE` 必須為 \"PRD\"（正式）或 \"DEV\"（模擬）")
-    elif order_mode == "PRD":
+    if prd_strategy:
         for key in ("PRD_API_KEY", "PRD_SECRET_KEY"):
             if not isinstance(data.get(key), str) or not data[key].strip():
-                errors.append(f"`{key}` 使用正式模式（ORDER_MODE=PRD）時必須填寫")
+                errors.append(f"`{key}` 使用正式策略（PRD_STRATEGY）時必須填寫")
 
-    strategy = data.get("STRATEGY")
-    if not isinstance(strategy, list) or not strategy:
-        errors.append("`STRATEGY` 必須為非空陣列，如 [\"long_breakout\"]")
-    elif invalid := set(strategy) - _VALID_STRATEGIES:
-        errors.append(f"`STRATEGY` 包含無效值：{sorted(invalid)}，只接受 long_breakout、short_bounce")
+    if dev_strategy:
+        for key in ("API_KEY", "SECRET_KEY"):
+            if not isinstance(data.get(key), str) or not data[key].strip():
+                errors.append(f"`{key}` 使用模擬策略（DEV_STRATEGY）時必須填寫")
+
+    for field in ("PRD_STRATEGY", "DEV_STRATEGY"):
+        val = data.get(field)
+        if val is not None:
+            if not isinstance(val, list):
+                errors.append(f"`{field}` 必須為陣列，如 [\"long_breakout\"] 或 []")
+            elif invalid := set(val) - _VALID_STRATEGIES:
+                errors.append(f"`{field}` 包含無效值：{sorted(invalid)}，只接受 long_breakout、short_bounce")
 
     notify_strategy = data.get("NOTIFY_STRATEGY")
     if notify_strategy is not None:

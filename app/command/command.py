@@ -185,10 +185,14 @@ async def my_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     risk_label  = "固定投入金額" if cfg.get("RISK_TYPE") == 0 else "固定損失金額"
     blacklist   = cfg.get("SYMBOL_BLACKLIST") or []
     margin_type = cfg.get("MARGIN_TYPE", "CROSSED")
-    order_mode  = cfg.get("ORDER_MODE", "DEV")
     long_tp_str  = _fmt_tp(cfg.get("LONG_TP_STRATEGY", []), "多頭止盈策略")
     short_tp_raw = cfg.get("SHORT_TP_STRATEGY")
     short_tp_str = _fmt_tp(short_tp_raw, "空頭止盈策略") if short_tp_raw else "空頭止盈策略：（同多頭）"
+
+    prd_strat = cfg.get("PRD_STRATEGY", [])
+    dev_strat = cfg.get("DEV_STRATEGY", [])
+    prd_str   = "、".join(prd_strat) if prd_strat else "（未啟用）"
+    dev_str   = "、".join(dev_strat) if dev_strat else "（未啟用）"
 
     notify_strat = cfg.get("NOTIFY_STRATEGY")
     if notify_strat is None:
@@ -206,8 +210,8 @@ async def my_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Secret Key（模擬）：`{_mask('SECRET_KEY')}`\n"
         f"API Key（正式）：`{_mask('PRD_API_KEY')}`\n"
         f"Secret Key（正式）：`{_mask('PRD_SECRET_KEY')}`\n\n"
-        f"下單模式：`{'正式 (PRD)' if order_mode == 'PRD' else '模擬 (DEV)'}`\n"
-        f"自動開單策略：`{'、'.join(cfg.get('STRATEGY', []))}`\n"
+        f"正式開單策略：`{prd_str}`\n"
+        f"模擬開單策略：`{dev_str}`\n"
         f"訊號通知策略：`{notify_str}`\n"
         f"風險模式：{risk_label}\n"
         f"投入/損失金額：`{cfg.get('RISK_AMOUNT')} USDT`\n"
@@ -225,8 +229,9 @@ async def my_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 _ALL_CONFIG_KEYS = {
-    "API_KEY", "SECRET_KEY", "PRD_API_KEY", "PRD_SECRET_KEY", "ORDER_MODE",
-    "STRATEGY", "NOTIFY_STRATEGY", "RISK_TYPE", "RISK_AMOUNT", "RISK_LEVERAGE", "MARGIN_TYPE",
+    "API_KEY", "SECRET_KEY", "PRD_API_KEY", "PRD_SECRET_KEY",
+    "PRD_STRATEGY", "DEV_STRATEGY", "NOTIFY_STRATEGY",
+    "RISK_TYPE", "RISK_AMOUNT", "RISK_LEVERAGE", "MARGIN_TYPE",
     "LONG_TP_STRATEGY", "SHORT_TP_STRATEGY", "LONG_ORDER_LIMIT", "SHORT_ORDER_LIMIT",
     "ADD_SAME_SYMBOL", "SYMBOL_BLACKLIST", "ENABLED",
 }
@@ -306,9 +311,12 @@ async def handle_json_message(update: Update, _context: ContextTypes.DEFAULT_TYP
     else:
         notify_str = "、".join(notify_strat)
 
+    _prd = data.get("PRD_STRATEGY", [])
+    _dev = data.get("DEV_STRATEGY", [])
     await update.message.reply_text(
         f"✅ *設定已儲存！*\n\n"
-        f"自動開單策略：`{'、'.join(data.get('STRATEGY', []))}`\n"
+        f"正式開單策略：`{'、'.join(_prd) if _prd else '（未啟用）'}`\n"
+        f"模擬開單策略：`{'、'.join(_dev) if _dev else '（未啟用）'}`\n"
         f"訊號通知策略：`{notify_str}`\n"
         f"風險模式：{risk_label}\n"
         f"投入/損失金額：`{data.get('RISK_AMOUNT')} USDT`\n"
