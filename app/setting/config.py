@@ -9,7 +9,7 @@ load_dotenv()
 - 集中管理告警策略門檻（價格/成交量/OI）與監控行為參數
 """
 # ================== 設定 ==================
-CHAT_ID        = os.getenv("CHAT_ID")
+CHAT_ID        = int(os.getenv("CHAT_ID")) if os.getenv("CHAT_ID") else None
 BOT_TOKEN      = os.getenv("BOT_TOKEN")
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 EXCLUDE_SYMBOLS = {"USDC"}

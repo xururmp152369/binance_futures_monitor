@@ -287,7 +287,7 @@ async def check_expired_sessions(bot) -> None:
 
 # ─── 設定範本 ─────────────────────────────────────────────────────────────────
 
-_VALID_STRATEGIES = {"long_breakout", "short_bounce"}
+_VALID_STRATEGIES = {"long_breakout", "short_bounce", "death_cross_short"}
 
 CONFIG_TEMPLATE_TEXT = """\
 📋 *個人設定說明*
@@ -300,6 +300,7 @@ CONFIG_TEMPLATE_TEXT = """\
 • `PRD_STRATEGY`：觸發*正式自動開單*的策略（填 `[]` 停用正式下單）
   ‣ `"long_breakout"`：多頭盤整突破（4h 帶量拉漲 → 盤整 → 15m 帶量突破做多）
   ‣ `"short_bounce"`：空頭跌破反彈123法則（多頭廢棄 → 反彈被壓制 → 15m 帶量跌破做空）
+  ‣ `"death_cross_short"`：死亡叉制空（日線 EMA50<EMA200 格局 → 日線跌破 EMA200 → 1H 拒絕/吞噬做空）
 • `DEV_STRATEGY`：觸發*模擬自動開單*的策略（填 `[]` 停用模擬下單，有效值同上）
 • `NOTIFY_STRATEGY`：接收*訊號通知*的策略（不想接收填 `[]`，有效值同上）
 • `RISK_TYPE`：風險計算方式
@@ -326,7 +327,7 @@ CONFIG_TEMPLATE_TEXT = """\
     "PRD_SECRET_KEY": "",
     "PRD_STRATEGY": [],
     "DEV_STRATEGY": ["long_breakout"],
-    "NOTIFY_STRATEGY": ["long_breakout", "short_bounce"],
+    "NOTIFY_STRATEGY": ["long_breakout", "short_bounce", "death_cross_short"],
     "RISK_TYPE": 0,
     "RISK_AMOUNT": 0.1,
     "RISK_LEVERAGE": 20,
@@ -370,14 +371,14 @@ def validate_config(data: dict) -> tuple[bool, list[str]]:
             if not isinstance(val, list):
                 errors.append(f"`{field}` 必須為陣列，如 [\"long_breakout\"] 或 []")
             elif invalid := set(val) - _VALID_STRATEGIES:
-                errors.append(f"`{field}` 包含無效值：{sorted(invalid)}，只接受 long_breakout、short_bounce")
+                errors.append(f"`{field}` 包含無效值：{sorted(invalid)}，只接受 long_breakout、short_bounce、death_cross_short")
 
     notify_strategy = data.get("NOTIFY_STRATEGY")
     if notify_strategy is not None:
         if not isinstance(notify_strategy, list):
             errors.append("`NOTIFY_STRATEGY` 必須為陣列，如 [\"long_breakout\"] 或 []")
         elif invalid_ns := set(notify_strategy) - _VALID_STRATEGIES:
-            errors.append(f"`NOTIFY_STRATEGY` 包含無效值：{sorted(invalid_ns)}，只接受 long_breakout、short_bounce")
+            errors.append(f"`NOTIFY_STRATEGY` 包含無效值：{sorted(invalid_ns)}，只接受 long_breakout、short_bounce、death_cross_short")
 
     if data.get("RISK_TYPE") not in (0, 1):
         errors.append("`RISK_TYPE` 必須為 0（固定金額）或 1（固定損失）")
