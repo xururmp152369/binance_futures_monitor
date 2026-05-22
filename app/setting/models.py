@@ -20,3 +20,4 @@ bot = None
 # ================== 策略狀態 ==================
 strategy_state       = {}  # symbol → 多頭策略狀態 dict（由 long_breakout 管理）
 short_strategy_state = {}  # symbol → 空頭策略狀態 dict（由 short_bounce 管理）
+death_cross_state    = {}  # symbol → 死亡叉策略狀態 dict（由 death_cross_short 管理）

@@ -21,6 +21,12 @@ from .short_bounce import (
     on_new_15m_candle_short,
     check_short_invalidation_realtime,
 )
+from .death_cross_short import (
+    DeathCrossPhase,
+    on_new_daily_candle as dc_on_new_daily_candle,
+    on_new_1h_candle as dc_on_new_1h_candle,
+    replay_historical_daily_candles,
+)
 from ..extension.utils import setup_logging
 
 log = setup_logging()
@@ -88,3 +94,18 @@ def replay_historical_4h_candles(
 ) -> None:
     """啟動時恢復多頭歷史狀態。空頭策略由廢棄事件驅動，不需歷史回播。"""
     replay_historical_4h_candles_long(symbol, direction)
+
+
+def on_new_daily_candle(symbol: str, candle: tuple) -> None:
+    """協調死亡叉策略的 Daily 狀態轉換。"""
+    dc_on_new_daily_candle(symbol, candle)
+
+
+def on_new_1h_candle(symbol: str, candle: tuple) -> dict | None:
+    """協調死亡叉策略的 1H 進場信號，回傳 Type 3 訊號或 None。"""
+    return dc_on_new_1h_candle(symbol, candle)
+
+
+def replay_historical_daily_candles_dc(symbol: str) -> None:
+    """啟動時恢復死亡叉策略的日線歷史狀態。"""
+    replay_historical_daily_candles(symbol)

@@ -8,6 +8,7 @@ log = setup_logging()
 _SIGNAL_STRATEGY_KEY = {
     "type1": "long_breakout",
     "type2": "short_bounce",
+    "type3": "death_cross_short",
 }
 
 _REMINDER_TEXT = "⚠️ 請更新設定以便接收新訊號（輸入 /setup 查看範本）"
@@ -85,6 +86,39 @@ def format_type2_alert(symbol: str, signal: dict) -> str:
     )
 
 
+def format_type3_alert(symbol: str, signal: dict) -> str:
+    sym_display = symbol.replace("USDT", "USDT.P")
+    close       = signal["close"]
+    stop        = signal["stop_loss"]
+    sig_type    = signal["signal_type"]
+    ema200_1h   = signal["ema200_1h"]
+    atr_14_1h   = signal["atr_14_1h"]
+    close_t0    = signal["close_t0"]
+    vol_ratio   = signal["vol_ratio"]
+    candle_str  = datetime.fromtimestamp(signal["candle_open_time_ms"] / 1000).strftime("%Y/%m/%d %H:%M")
+
+    stop_pct  = (stop - close) / close * 100
+    sig_label = "拒絕蠟燭" if sig_type == "rejection" else "吞噬型態"
+
+    return (
+        f"🎯 *策略訊號 — Type 3 死亡叉做空*\n"
+        f"幣種：`{sym_display}` ｜ {_now_str()}\n"
+        f"\n"
+        f"⏰ 信號 K 棒：`{candle_str}`（1H）\n"
+        f"📋 信號類型：`{sig_label}`\n"
+        f"\n"
+        f"💰 收盤：`{_fmt_price(close)}`\n"
+        f"📉 EMA200(1H)：`{_fmt_price(ema200_1h)}`\n"
+        f"📊 量能：`{vol_ratio:.1f}×` 前根\n"
+        f"\n"
+        f"🔴 止損：`{_fmt_price(stop)}`（EMA200 + ATR，+{stop_pct:.2f}%）\n"
+        f"📐 ATR(14,1H)：`{_fmt_price(atr_14_1h)}`\n"
+        f"\n"
+        f"📅 日線跌破基準：`{_fmt_price(close_t0)}`\n"
+        f"[📈 查看圖表](https://www.binance.com/zh-TC/futures/{symbol})"
+    )
+
+
 async def send_strategy_alert(symbol: str, signal: dict) -> bool:
     """發送策略訊號告警到 Telegram。
 
@@ -101,6 +135,8 @@ async def send_strategy_alert(symbol: str, signal: dict) -> bool:
             text = format_type1_alert(symbol, signal)
         elif sig_type == "type2":
             text = format_type2_alert(symbol, signal)
+        elif sig_type == "type3":
+            text = format_type3_alert(symbol, signal)
         else:
             return False
 

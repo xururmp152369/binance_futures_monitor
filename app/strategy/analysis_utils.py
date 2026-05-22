@@ -103,6 +103,48 @@ def get_4h_ema(symbol: str, period: int) -> float | None:
     return calc_ema(closes, period)
 
 
+def get_daily_ema(symbol: str, period: int) -> float | None:
+    """從 kline_daily_ohlc 的 close 序列計算 EMA。至少需要 period 根 K 棒。"""
+    ohlc = models.symbol_state.get(symbol, {}).get("kline_daily_ohlc")
+    if not ohlc or len(ohlc) < period:
+        return None
+    closes = [c[4] for c in ohlc]
+    return calc_ema(closes, period)
+
+
+def get_1h_ema(symbol: str, period: int) -> float | None:
+    """從 kline_1h_ohlc 的 close 序列計算 EMA。至少需要 period 根 K 棒。"""
+    ohlc = models.symbol_state.get(symbol, {}).get("kline_1h_ohlc")
+    if not ohlc or len(ohlc) < period:
+        return None
+    closes = [c[4] for c in ohlc]
+    return calc_ema(closes, period)
+
+
+def calc_atr(candles: list, period: int) -> float | None:
+    """計算 ATR(period)。candles 格式：[(open_time_ms, o, h, l, c, vol), ...]，舊→新。"""
+    if len(candles) < period + 1:
+        return None
+    true_ranges = []
+    for i in range(1, len(candles)):
+        high       = candles[i][2]
+        low        = candles[i][3]
+        prev_close = candles[i - 1][4]
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        true_ranges.append(tr)
+    if len(true_ranges) < period:
+        return None
+    return sum(true_ranges[-period:]) / period
+
+
+def get_1h_atr(symbol: str, period: int = 14) -> float | None:
+    """從 kline_1h_ohlc 計算 ATR(period)。至少需要 period + 1 根 K 棒。"""
+    ohlc = models.symbol_state.get(symbol, {}).get("kline_1h_ohlc")
+    if not ohlc or len(ohlc) < period + 1:
+        return None
+    return calc_atr(list(ohlc), period)
+
+
 # ─── K棒形態分析 ──────────────────────────────────────────────────────────────
 
 def upper_wick_size(open_: float, high: float, close: float) -> float:

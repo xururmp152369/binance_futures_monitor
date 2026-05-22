@@ -2,23 +2,30 @@
 
 ## 專案概覽
 
-自動化監控 Binance 永續合約，偵測多頭「4h 拉漲後盤整突破」與空頭「跌破反彈123法則」進場機會，透過 Telegram Bot 發訊號並支援自動下單。監控全 USDT 合約，運行於本機 Docker。
+自動化監控 Binance 永續合約，偵測三種進場機會，透過 Telegram Bot 發訊號並支援自動下單。監控全 USDT 合約，運行於本機 Docker。
+
+- **Type 1**（多頭）：4h 拉漲後盤整突破
+- **Type 2**（空頭）：跌破反彈 123 法則
+- **Type 3**（空頭）：死亡叉制空（日線格局 + 1H EMA200 壓制）
 
 ---
 
 ## 架構與資料流
 
 ```
-Binance WebSocket (markPrice + kline_15m/4h)
+Binance WebSocket (markPrice + kline_15m/1h/4h/1d)
         │
-        ├─ markPrice → _handle_mark_price() → 更新 last_price
-        ├─ 15m 收盤  → on_new_15m_candle()  → Type 1（多頭）/ Type 2（空頭）訊號
-        └─ 4h  收盤  → on_new_4h_candle()   → 多頭/空頭狀態機轉換
+        ├─ markPrice → _handle_mark_price()     → 更新 last_price
+        ├─ 15m 收盤  → on_new_15m_candle()      → Type 1（多頭）/ Type 2（空頭）訊號
+        ├─ 1h  收盤  → on_new_1h_candle()       → Type 3（死亡叉）進場信號
+        ├─ 4h  收盤  → on_new_4h_candle()       → 多頭/空頭狀態機轉換
+        └─ 1d  收盤  → on_new_daily_candle()    → 死亡叉 Layer1/2 狀態轉換
                               │
               strategy/state_machine.py（策略協調器）
-                 ├─ strategy/long_breakout.py    IDLE → TRACKING → READY
-                 ├─ strategy/short_bounce.py     SHORT_WATCHING → SHORT_READY
-                 └─ strategy/analysis_utils.py  （EMA、量能、K棒形態共用工具）
+                 ├─ strategy/long_breakout.py      IDLE → TRACKING → READY
+                 ├─ strategy/short_bounce.py       SHORT_WATCHING → SHORT_READY
+                 ├─ strategy/death_cross_short.py  IDLE → WATCHING → ALERT
+                 └─ strategy/analysis_utils.py    （EMA、ATR、量能、K棒形態共用工具）
                               │
                   strategy/strategy_alerts.py → Telegram Bot
                               │
@@ -33,12 +40,13 @@ Binance WebSocket (markPrice + kline_15m/4h)
 |------|------|
 | `app/main.py` | 進入點，啟動背景任務 + Telegram polling |
 | `app/setting/config.py` | 環境變數讀取、策略參數常數 |
-| `app/setting/models.py` | 全域狀態容器（symbol_state, strategy_state, short_strategy_state） |
-| `app/datacenter/binance_opendata.py` | WebSocket 監聽、歷史資料載入、自動重連 |
+| `app/setting/models.py` | 全域狀態容器（symbol_state, strategy_state, short_strategy_state, death_cross_state） |
+| `app/datacenter/binance_opendata.py` | WebSocket 監聽（15m/1h/4h/1d）、歷史資料載入、自動重連 |
 | `app/strategy/state_machine.py` | 策略協調器（對外公開 API，呼叫各策略模組） |
 | `app/strategy/long_breakout.py` | 多頭盤整突破策略狀態機（IDLE/TRACKING/READY） |
 | `app/strategy/short_bounce.py` | 空頭跌破反彈123法則（SHORT_WATCHING/SHORT_READY） |
-| `app/strategy/analysis_utils.py` | 共用分析工具（EMA 計算、量能基準、K棒形態判斷） |
+| `app/strategy/death_cross_short.py` | 死亡叉制空策略（IDLE/WATCHING/ALERT，日線格局 + 1H 進場） |
+| `app/strategy/analysis_utils.py` | 共用分析工具（EMA/ATR 計算、量能基準、K棒形態判斷） |
 | `app/strategy/strategy_alerts.py` | Telegram 訊號格式化與多使用者廣播 |
 | `app/tgbot/monitor.py` | 週期任務（幣種清單更新、廢棄掃描、session 過期） |
 | `app/command/command.py` | Telegram 指令處理（帳號/設定/查詢） |
@@ -49,7 +57,7 @@ Binance WebSocket (markPrice + kline_15m/4h)
 
 ## 使用者設定欄位
 
-有效策略代號：`"long_breakout"`（多頭盤整突破）、`"short_bounce"`（空頭跌破反彈123）
+有效策略代號：`"long_breakout"`（多頭盤整突破）、`"short_bounce"`（空頭跌破反彈123）、`"death_cross_short"`（死亡叉制空）
 
 | 欄位 | 說明 |
 |------|------|
@@ -62,7 +70,7 @@ Binance WebSocket (markPrice + kline_15m/4h)
 兩個策略欄位均可同時設定，同一訊號可同時觸發正式與模擬兩筆下單。
 `PRD_STRATEGY` 非空時需填 `PRD_API_KEY`/`PRD_SECRET_KEY`；`DEV_STRATEGY` 非空時需填 `API_KEY`/`SECRET_KEY`。
 
-訊號通知路由（`strategy_alerts.py`）：Type 1 → `"long_breakout"`；Type 2 → `"short_bounce"`。
+訊號通知路由（`strategy_alerts.py`）：Type 1 → `"long_breakout"`；Type 2 → `"short_bounce"`；Type 3 → `"death_cross_short"`。
 公頻 `CHAT_ID` 不受 `NOTIFY_STRATEGY` 限制，永遠收到所有訊號。
 
 ---
@@ -190,11 +198,85 @@ SHORT_READY（就緒，監控 15m 跌破）
 
 ---
 
+## 死亡叉策略狀態機規格（death_cross_short.py）
+
+### 策略邏輯概述（日線死亡叉格局 + 1H EMA200 壓制）
+
+1. **Layer 1**（日線，持續監控）：EMA50(D) < EMA200(D) → 格局確立，進入 WATCHING
+2. **Layer 2**（日線，每日確認）：close(D) 跌破 EMA200(D)，時效性（48H）與幅度（10%）檢查通過 → 進入 ALERT 48H 窗口
+3. **Layer 3**（1H，即時監控）：ALERT 窗口內，1H 出現信號 A 或 B → 做空進場
+
+### 死亡叉狀態轉換
+
+```
+IDLE（EMA50 ≥ EMA200，不監控）
+ │ EMA50(D) < EMA200(D)
+ ▼
+WATCHING（格局確立，等待日線跌破 EMA200）
+ │ EMA50 穿回 EMA200 上方 → IDLE
+ │ close(D) < EMA200(D)，且：
+ │   - 時效：距上次 close > EMA200 ≤ 48H（跌破需新鮮）
+ │   記錄 Close_T0 = 當根日線收盤價，alert_time = T0
+ ▼
+ALERT（48H 監控窗口，等待 1H 進場信號）
+ │ EMA50 穿回 EMA200 上方 → IDLE
+ │ 超過 48H → WATCHING
+ │ 日線收盤 > Close_T0 × 1.10（回漲超 10%）→ WATCHING
+ └─ 每根 1H 收盤 → 偵測信號 A 或 B → Type 3 做空
+```
+
+### Type 3 進場信號定義
+
+**信號 A：拒絕蠟燭（Rejection Candle）**
+```
+1. high(1H) > EMA200(1H)                             ← 上影線刺穿 EMA200
+2. close(1H) < EMA200(1H)                            ← 收盤壓回下方
+3. (EMA200 - close) / EMA200 >= DC_REJECTION_BODY_PCT ← 至少 0.5% 壓制幅度
+4. close(1H) < open(1H)                              ← 陰線實體向下
+```
+
+**信號 B：吞噬型態（Engulfing Pattern）**
+```
+1. close(1H) < EMA200(1H)
+2. open(1H) > close(1H-1)                                      ← 跳空高開
+3. close(1H) < close(1H-1)                                     ← 收盤低於前根
+4. |close - open| > |close_prev - open_prev| × DC_ENGULF_BODY_RATIO  ← 實體吞噬 1.5×
+5. volume(1H) > volume(1H-1) × DC_ENGULF_VOLUME_RATIO                ← 帶量 1.5×
+```
+
+**止損計算：** `EMA200(1H) + ATR(14, 1H)`
+
+**進場限制：**
+- 每個 ALERT 窗口最多 2 次（`DC_MAX_ENTRIES_PER_ALERT`）
+- 兩次進場間需間隔 `STRATEGY_COOLDOWN`（4H）
+- 再進場需等待新的信號 A 或 B 確認
+
+### 死亡叉 death_cross_state 欄位
+
+| 欄位 | 說明 |
+|------|------|
+| `phase` | DeathCrossPhase 枚舉（IDLE / WATCHING / ALERT） |
+| `alert_time` | T0 Unix 秒數（ALERT 窗口起點） |
+| `close_t0` | T0 當下日線收盤價（幅度保護基準，10% 上限） |
+| `entry_count` | 本 ALERT 窗口已進場次數（上限 2） |
+| `last_entry_ts` | 上次進場時間戳（冷卻計算用） |
+
+### 歷史回播
+
+啟動時呼叫 `replay_historical_daily_candles_dc(symbol)`，依序重播所有歷史日線 K 棒恢復狀態。需要 `kline_daily_ohlc` 內至少 200 根（EMA200 最低需求）。
+
+---
+
 ## Candle Tuple 格式
 
-- 4h：`(open_time_ms, open, high, low, close, quote_volume)`
-- 15m：`(open_time_ms, open, high, low, close, quote_volume)`
-- 時間欄位必須用 `k["t"]`（open_time_ms），不得用 `k["T"]`（close_time_ms）
+所有時框統一格式：`(open_time_ms, open, high, low, close, quote_volume)`
+
+- **1d**：`kline_daily_ohlc`，`deque(maxlen=250)`（EMA200 需 200 根，250 根緩衝）
+- **4h**：`kline_4h_ohlc`，`deque(maxlen=50)`
+- **1h**：`kline_1h_ohlc`，`deque(maxlen=250)`（EMA200 需 200 根，ATR 需 15 根）
+- **15m**：`kline_15m_ohlc`，`deque(maxlen=200)`
+
+時間欄位必須用 `k["t"]`（open_time_ms），不得用 `k["T"]`（close_time_ms）
 
 ---
 
@@ -213,9 +295,9 @@ SHORT_READY（就緒，監控 15m 跌破）
 | `LOOKBACK_VOLUME_MULT` | 2.5 | Type 1 回掃止損放量門檻倍數 |
 | `METHOD_B_GAIN_ADVANTAGE` | 1.0 | Method B 觸發漲幅需超原 pump_candle 的幅度（%） |
 | `METHOD_B_RELAXED_THRESHOLD` | 10.0 | 原 pump_candle 漲幅超過此值時，Method B 無需比較優勢直接重置 |
-| `STRATEGY_COOLDOWN` | 14400 | 告警冷卻秒數（4h） |
+| `STRATEGY_COOLDOWN` | 14400 | 告警冷卻秒數（4h，三個策略共用） |
 
-### 空頭策略
+### 空頭策略（short_bounce）
 
 | 參數 | 預設值 | 說明 |
 |------|--------|------|
@@ -228,19 +310,37 @@ SHORT_READY（就緒，監控 15m 跌破）
 | `SHORT_BOUNCE_VOLUME_MAX` | 1.5 | 反彈量能上限倍數（超過視為帶量，移除觀察） |
 | `SHORT_ENTRY_VOLUME_MIN` | 1.0 | Type 2 進場量能下限倍數 |
 
+### 死亡叉策略（death_cross_short）
+
+| 參數 | 預設值 | 說明 |
+|------|--------|------|
+| `DC_DAILY_EMA_FAST` | 50 | Layer 1 短均線週期（EMA50，日線） |
+| `DC_DAILY_EMA_SLOW` | 200 | Layer 1/2 長均線週期（EMA200，日線） |
+| `DC_1H_EMA_PERIOD` | 200 | 1H 壓制均線週期（EMA200，1H） |
+| `DC_1H_ATR_PERIOD` | 14 | 止損 ATR 週期（1H） |
+| `DC_ALERT_WINDOW_HOURS` | 48 | ALERT 監控窗口時數（日線跌破後有效期） |
+| `DC_MAX_ROLLBACK_HOURS` | 48 | 時效性：距上次 close > EMA200 不超過此小時數 |
+| `DC_PRICE_RECOVERY_PCT` | 1.10 | 幅度保護：日線收盤超過 Close_T0 × 此值則廢棄 |
+| `DC_MAX_ENTRIES_PER_ALERT` | 2 | 每 ALERT 窗口最大進場次數 |
+| `DC_REJECTION_BODY_PCT` | 0.005 | 信號 A：收盤低於 EMA200(1H) 至少 0.5% |
+| `DC_ENGULF_BODY_RATIO` | 1.5 | 信號 B：當根實體需 > 前根實體 × 此值 |
+| `DC_ENGULF_VOLUME_RATIO` | 1.5 | 信號 B：量能需 > 前根 × 此值 |
+
 ---
 
 ## 關鍵注意事項
 
 1. **WebSocket 不得阻塞**：策略函數內所有 I/O（Telegram、下單）必須用 `asyncio.create_task()`
 2. **15m 量能 baseline**：用 `kline_15m_ohlc[-193:-1]`（192 根），排除當前未收盤根
-3. **歷史回播**：啟動時 `replay_historical_4h_candles()` 恢復多頭盤整狀態；空頭策略由廢棄事件觸發，不需歷史回播
-4. **廢棄條件即時掃描**：`scan_strategy()` 每 10 秒比對 markPrice；即時廢棄**不觸發**空頭策略，只有 4h 收盤廢棄才觸發
-5. **自動下單模式**：使用者設定 `PRD_STRATEGY` 有值 → `testnet=False`（正式）；`DEV_STRATEGY` 有值 → `testnet=True`（模擬），兩者可同時運行
-6. **廢棄條件用實體**：4h K 廢棄判斷以 `min(open, close)` 為準，下影線不觸發廢棄
-7. **空頭廢棄事件傳遞**：`on_new_4h_candle_long()` 廢棄時回傳事件 dict，由 `state_machine.py` 協調器轉送給 `short_bounce.enter_short_watching()`
-8. **EMA 計算**：`analysis_utils.get_4h_ema()` 使用 `kline_4h_ohlc` 的 close 序列，至少需要 `EMA_LONG_PERIOD`（60）根 K 棒才有效
-9. **Method B 僅在 READY**：Method B 重置邏輯只在 `StrategyPhase.READY` 觸發，TRACKING 不處理
+3. **多頭歷史回播**：啟動時 `replay_historical_4h_candles()` 恢復多頭盤整狀態；空頭策略由廢棄事件觸發，不需歷史回播
+4. **死亡叉歷史回播**：啟動時 `replay_historical_daily_candles_dc()` 依序重播日線 K 棒，恢復 WATCHING/ALERT 狀態
+5. **廢棄條件即時掃描**：`scan_strategy()` 每 10 秒比對 markPrice；即時廢棄**不觸發**空頭策略，只有 4h 收盤廢棄才觸發
+6. **自動下單模式**：使用者設定 `PRD_STRATEGY` 有值 → `testnet=False`（正式）；`DEV_STRATEGY` 有值 → `testnet=True`（模擬），兩者可同時運行
+7. **廢棄條件用實體**：4h K 廢棄判斷以 `min(open, close)` 為準，下影線不觸發廢棄
+8. **空頭廢棄事件傳遞**：`on_new_4h_candle_long()` 廢棄時回傳事件 dict，由 `state_machine.py` 協調器轉送給 `short_bounce.enter_short_watching()`
+9. **EMA 計算**：`analysis_utils` 提供 `get_4h_ema`、`get_daily_ema`、`get_1h_ema`，各自從對應 ohlc deque 的 close 序列計算；`get_1h_atr` 計算 1H ATR(14)
+10. **Method B 僅在 READY**：Method B 重置邏輯只在 `StrategyPhase.READY` 觸發，TRACKING 不處理
+11. **歷史資料 API 限流**：`load_historical_data_batch()` 每幣種載入順序為 4h → 15m → 1h → 1d，每次 API 呼叫後 sleep 0.5s，每幣種完成後 sleep 1.0s，每批次間 sleep 3.0s
 
 ---
 

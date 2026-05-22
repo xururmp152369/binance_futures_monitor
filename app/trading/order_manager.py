@@ -11,6 +11,7 @@ log = setup_logging()
 _SIGNAL_TO_STRATEGY = {
     "type1": "long_breakout",
     "type2": "short_bounce",
+    "type3": "death_cross_short",
 }
 
 

@@ -8,7 +8,10 @@ from collections import deque
 from ..strategy.state_machine import (
     on_new_4h_candle,
     on_new_15m_candle,
+    on_new_1h_candle,
+    on_new_daily_candle,
     replay_historical_4h_candles,
+    replay_historical_daily_candles_dc,
 )
 from ..strategy.strategy_alerts import send_strategy_alert, send_order_results
 from ..trading.order_manager import place_orders_for_all_users
@@ -104,8 +107,25 @@ async def load_historical_data_batch(client, symbols):
                     if ohlc_15m:
                         symbol_state[symbol]["kline_15m_ohlc"].extend(ohlc_15m)
 
-                    # 重播歷史 4h K 棒以恢復策略狀態
+                    await asyncio.sleep(0.5)
+
+                    # 1H K 棒（死亡叉策略 Layer3 進場信號 + EMA200 + ATR）
+                    ohlc_1h = await load_historical_klines_ohlc(client, symbol, "1h", 250)
+                    if ohlc_1h:
+                        symbol_state[symbol]["kline_1h_ohlc"].extend(ohlc_1h)
+
+                    await asyncio.sleep(0.5)
+
+                    # Daily K 棒（死亡叉策略 Layer1/2 + EMA50/200）
+                    ohlc_daily = await load_historical_klines_ohlc(client, symbol, "1d", 250)
+                    if ohlc_daily:
+                        symbol_state[symbol]["kline_daily_ohlc"].extend(ohlc_daily)
+
+                    # 重播歷史 4h K 棒以恢復多頭策略狀態
                     replay_historical_4h_candles(symbol)
+
+                    # 重播歷史 Daily K 棒以恢復死亡叉策略狀態
+                    replay_historical_daily_candles_dc(symbol)
 
                     log.info(f"✅ {symbol} 歷史資料載入完成")
                     
@@ -153,9 +173,13 @@ async def initialize_symbols(client):
                 symbol_state[s] = {
                     "last_price": None,
                     "funding_rate": 0.0,
-                    "last_kline_close_time_15m": 0,
-                    "kline_4h_ohlc":  deque(maxlen=50),
-                    "kline_15m_ohlc": deque(maxlen=200),
+                    "last_kline_close_time_15m":    0,
+                    "last_kline_close_time_1h":     0,
+                    "last_kline_close_time_daily":  0,
+                    "kline_4h_ohlc":     deque(maxlen=50),
+                    "kline_15m_ohlc":    deque(maxlen=200),
+                    "kline_1h_ohlc":     deque(maxlen=250),
+                    "kline_daily_ohlc":  deque(maxlen=250),
                 }
                 new_symbols.append(s)
 
@@ -166,12 +190,15 @@ async def initialize_symbols(client):
             log.info(f"歷史資料載入完成")
 
         # 清理無效幣種
+        from ..setting.models import short_strategy_state, death_cross_state
         for s in list(symbol_state):
             if s not in valid:
                 log.info(f"幣種 {s} 不再符合條件，開始清理...")
                 symbol_state.pop(s, None)
                 price_history.pop(s, None)
                 strategy_state.pop(s, None)
+                short_strategy_state.pop(s, None)
+                death_cross_state.pop(s, None)
                 log.info(f"幣種 {s} 已清理")   
 
     except Exception as e:
@@ -221,6 +248,38 @@ def _handle_kline_4h(data: dict) -> None:
     on_new_4h_candle(sym, candle)
 
 
+def _handle_kline_1h(data: dict) -> tuple | None:
+    """收盤 1H K 棒：去重、存 OHLC。回傳 (sym, candle) 或 None。"""
+    k   = data["k"]
+    sym = k["s"]
+    if sym not in symbol_state or not k["x"]:
+        return None
+    state      = symbol_state[sym]
+    close_time = k["T"] // 1000
+    if close_time <= state["last_kline_close_time_1h"]:
+        return None
+    state["last_kline_close_time_1h"] = close_time
+    candle = (int(k["t"]), float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]), float(k["q"]))
+    state["kline_1h_ohlc"].append(candle)
+    return sym, candle
+
+
+def _handle_kline_daily(data: dict) -> None:
+    """收盤 Daily K 棒：去重、存 OHLC、驅動死亡叉策略狀態機。"""
+    k   = data["k"]
+    sym = k["s"]
+    if sym not in symbol_state or not k["x"]:
+        return
+    state      = symbol_state[sym]
+    close_time = k["T"] // 1000
+    if close_time <= state["last_kline_close_time_daily"]:
+        return
+    state["last_kline_close_time_daily"] = close_time
+    candle = (int(k["t"]), float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]), float(k["q"]))
+    state["kline_daily_ohlc"].append(candle)
+    on_new_daily_candle(sym, candle)
+
+
 # ================== 合約幣對 價格K棒監控 ==================
 
 async def handle_price_websocket(client, batch_symbols):
@@ -238,7 +297,9 @@ async def handle_price_websocket(client, batch_symbols):
         s = sym.lower()
         streams.append(f"{s}@markPrice")
         streams.append(f"{s}@kline_15m")
+        streams.append(f"{s}@kline_1h")
         streams.append(f"{s}@kline_4h")
+        streams.append(f"{s}@kline_1d")
 
     reconnect_delay = 5  # 初始重連等待秒數
 
@@ -273,9 +334,22 @@ async def handle_price_websocket(client, batch_symbols):
                                 if signal:
                                     asyncio.create_task(_fire_signal(sym, signal))
 
+                        elif stream_name.endswith("@kline_1h"):
+                            last_symbol, last_interval = data["k"]["s"], "1h"
+                            result = _handle_kline_1h(data)
+                            if result:
+                                sym, candle = result
+                                signal = on_new_1h_candle(sym, candle)
+                                if signal:
+                                    asyncio.create_task(_fire_signal(sym, signal))
+
                         elif stream_name.endswith("@kline_4h"):
                             last_symbol, last_interval = data["k"]["s"], "4h"
                             _handle_kline_4h(data)
+
+                        elif stream_name.endswith("@kline_1d"):
+                            last_symbol, last_interval = data["k"]["s"], "1d"
+                            _handle_kline_daily(data)
 
                     except asyncio.CancelledError:
                         log.info(f"批次 WebSocket 收到取消信號 | batch_symbols={batch_symbols[:3]}...")
