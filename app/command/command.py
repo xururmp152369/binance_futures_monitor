@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 from telegram import Update
 from telegram.ext import ContextTypes
+from ..extension.utils import send_chunked
 from ..setting import models
 from ..setting.config import CONSOLIDATION_MIN_HOURS
 from ..strategy.state_machine import StrategyPhase
@@ -348,6 +349,7 @@ def _build_phase_list(phase: StrategyPhase) -> list[tuple[str, dict]]:
     ]
 
 
+
 async def ready_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/ready <long|short> — 列出 READY 狀態幣種。"""
     args = context.args
@@ -413,7 +415,7 @@ async def ready_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"  止損 `{rejection_h}`{dist_str}"
             )
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await send_chunked(update.message, lines)
 
 
 async def tracking_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -471,7 +473,7 @@ async def tracking_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"  觀察中 {watch_hrs:.0f}hr"
             )
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await send_chunked(update.message, lines)
 
 
 # ─── 系統指令 ─────────────────────────────────────────────────────────────────

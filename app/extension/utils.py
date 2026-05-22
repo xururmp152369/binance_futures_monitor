@@ -1,48 +1,27 @@
 import logging
 import os
 
+async def send_chunked(message, lines: list[str], *, max_len: int = 4096) -> None:
+    """將多行清單分批發送，超過 max_len 字元時自動切分並標示（N/M）。"""
+    chunks: list[list[str]] = []
+    current: list[str] = []
+    current_len = 0
+    for line in lines:
+        cost = len(line) + (1 if current else 0)  # +1 for joining \n
+        if current_len + cost > max_len:
+            chunks.append(current)
+            current = [line]
+            current_len = len(line)
+        else:
+            current.append(line)
+            current_len += cost
+    if current:
+        chunks.append(current)
 
-def _split_text(text: str, max_len: int):
-    """把長文字依最大長度切成多段。
-
-    主要用於 Telegram 訊息長度限制（單則訊息不可太長）。
-    會以「行」為優先切割，必要時才會硬切字串。
-    """
-    if text is None:
-        return [""]
-    if len(text) <= max_len:
-        return [text]
-
-    chunks = []
-    buf = ""
-    for line in text.splitlines(True):
-        if len(buf) + len(line) <= max_len:
-            buf += line
-            continue
-
-        if buf:
-            chunks.append(buf)
-            buf = ""
-
-        while len(line) > max_len:
-            chunks.append(line[:max_len])
-            line = line[max_len:]
-
-        buf = line
-
-    if buf:
-        chunks.append(buf)
-    return chunks
-
-
-async def reply_text_long(message, text: str, *, max_len: int = 3500, **kwargs):
-    """安全回覆 Telegram 長訊息。
-
-    會先把文字切塊後逐段送出，避免 `BadRequest: Message is too long`。
-    """
-    for chunk in _split_text(text, max_len=max_len):
-        await message.reply_text(chunk, **kwargs)
-
+    total = len(chunks)
+    for i, chunk in enumerate(chunks, 1):
+        suffix = f"\n\n`（{i}/{total}）`" if total > 1 else ""
+        await message.reply_text("\n".join(chunk) + suffix, parse_mode="Markdown")
 
 # ================== LOG 設定：同時輸出到控制台 + 檔案 ==================
 def setup_logging():
