@@ -132,13 +132,28 @@ async def _place_orders_for_user(
         await client.futures_change_leverage(symbol=symbol, leverage=leverage)
         log.info(f"[自動開單] {symbol} 槓桿設為 {leverage}x")
 
-        # 無現有持倉才清除殘留條件單（加倉時保留原有 SL/TP，不中斷保護）
         if not is_add_on:
+            # 首次開倉：清除所有殘留條件單，避免舊策略干擾
             try:
                 await client.futures_cancel_all_algo_open_orders(symbol=symbol)
                 log.info(f"[自動開單] {symbol} 已清除舊條件單")
             except Exception as e:
                 log.warning(f"[自動開單] {symbol} 清除舊條件單失敗（忽略）: {e}")
+        else:
+            # 加倉：取消現有的 closePosition 止損/止盈（-4130 同方向只能存在一個），
+            # 開倉成功後會用新訊號的止損重新保護整體倉位
+            try:
+                open_orders = await client.futures_get_open_orders(symbol=symbol)
+                cancel_ids = [
+                    o["orderId"] for o in open_orders
+                    if o.get("closePosition") and o.get("side") == exit_side
+                ]
+                for oid in cancel_ids:
+                    await client.futures_cancel_order(symbol=symbol, orderId=oid)
+                if cancel_ids:
+                    log.info(f"[自動開單] {symbol} 加倉：已取消 {len(cancel_ids)} 個舊 closePosition 條件單")
+            except Exception as e:
+                log.warning(f"[自動開單] {symbol} 加倉：取消舊條件單失敗（忽略）: {e}")
 
         # 計算下單量
         entry_price                    = signal["close"]

@@ -152,7 +152,7 @@ def _try_enter_alert(symbol: str, candle: tuple, ema200: float, candle_ts: float
 
     time_diff_h = (candle_ts - last_above_ts) / 3600
     if time_diff_h > DC_MAX_ROLLBACK_HOURS:
-        log.info(f"[DC] {symbol} Layer2 時效檢查失敗：距上次 close > EMA200 已 {time_diff_h:.1f}H")
+        # log.info(f"[DC] {symbol} Layer2 時效檢查失敗：距上次 close > EMA200 已 {time_diff_h:.1f}H")
         return
 
     # 檢查 B：幅度（T0 當下為起點，回漲 0%，永遠通過；後續由 on_new_daily_candle 持續監控）

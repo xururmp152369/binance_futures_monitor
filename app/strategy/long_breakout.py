@@ -214,7 +214,7 @@ def on_new_4h_candle_long(
                     st, symbol, open_, close, high, low,
                     current_ts, gain_pct, vol_ratio, direction, is_method_b=False,
                 )
-            elif gain_pct > prev_gain + METHOD_B_GAIN_ADVANTAGE:
+            elif gain_pct > prev_gain * (1 + METHOD_B_GAIN_ADVANTAGE / 100):
                 _apply_trigger(
                     st, symbol, open_, close, high, low,
                     current_ts, gain_pct, vol_ratio, direction, is_method_b=True,
