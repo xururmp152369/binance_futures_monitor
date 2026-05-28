@@ -103,7 +103,7 @@ TRACKING
  ▼
 READY
  │ 廢棄：同上（創新高退回 TRACKING）
- │ Method B：READY 狀態內出現符合觸發條件的 K，且其漲幅 > pump_candle 漲幅 + 1% → 完整重置觸發 K
+ │ Method B：READY 狀態內出現符合觸發條件的 K，且其漲幅 > pump_candle 漲幅 × (1 + METHOD_B_GAIN_ADVANTAGE/100) → 完整重置觸發 K
  │           （若原 pump_candle 漲幅 > METHOD_B_RELAXED_THRESHOLD，則任何觸發 K 均完整重置）
  └─ 每根 15m 收盤 → Type 1 帶量突破（做多）
 ```
@@ -293,7 +293,7 @@ ALERT（48H 監控窗口，等待 1H 進場信號）
 | `BREAKOUT_VOLUME_MULT` | 3.5 | Type 1 量能倍數（相對前 192 根 15m 均量） |
 | `BREAKOUT_BODY_PCT` | 0.005 | Type 1/2 實體超頂/破底幅度（0.5%） |
 | `LOOKBACK_VOLUME_MULT` | 2.5 | Type 1 回掃止損放量門檻倍數 |
-| `METHOD_B_GAIN_ADVANTAGE` | 1.0 | Method B 觸發漲幅需超原 pump_candle 的幅度（%） |
+| `METHOD_B_GAIN_ADVANTAGE` | 10.0 | Method B：新觸發 K 漲幅需 > pump_candle 漲幅 × (1 + N/100)，即比例優勢 N% |
 | `METHOD_B_RELAXED_THRESHOLD` | 10.0 | 原 pump_candle 漲幅超過此值時，Method B 無需比較優勢直接重置 |
 | `STRATEGY_COOLDOWN` | 14400 | 告警冷卻秒數（4h，三個策略共用） |
 

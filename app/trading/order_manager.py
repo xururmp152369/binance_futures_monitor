@@ -146,7 +146,9 @@ async def _place_orders_for_user(
                 open_orders = await client.futures_get_open_orders(symbol=symbol)
                 cancel_ids = [
                     o["orderId"] for o in open_orders
-                    if o.get("closePosition") and o.get("side") == exit_side
+                    if (o.get("closePosition") is True
+                        or str(o.get("closePosition", "")).lower() == "true")
+                    and o.get("side") == exit_side
                 ]
                 for oid in cancel_ids:
                     await client.futures_cancel_order(symbol=symbol, orderId=oid)
