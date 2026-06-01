@@ -272,7 +272,7 @@ ALERT（48H 監控窗口，等待 1H 進場信號）
 所有時框統一格式：`(open_time_ms, open, high, low, close, quote_volume)`
 
 - **1d**：`kline_daily_ohlc`，`deque(maxlen=250)`（EMA200 需 200 根，250 根緩衝）
-- **4h**：`kline_4h_ohlc`，`deque(maxlen=50)`
+- **4h**：`kline_4h_ohlc`，`deque(maxlen=200)`（200 根 ≈ 33 天，啟動時載入月歷史供狀態機回播）
 - **1h**：`kline_1h_ohlc`，`deque(maxlen=250)`（EMA200 需 200 根，ATR 需 15 根）
 - **15m**：`kline_15m_ohlc`，`deque(maxlen=200)`
 
@@ -357,6 +357,51 @@ python -m pytest tests/ -v --ignore=tests/test_ws_diag.py
 既有功能的回歸測試直接在主流程跑 pytest，不需獨立 Agent。
 
 `tests/test_ws_diag.py` 是手動診斷工具（需真實網路），不納入自動測試。
+
+---
+
+## 回測系統
+
+回測腳本位於 `backtest/`，重用現有策略狀態機對歷史資料進行統計，**完全不影響正式環境**（獨立 Python process，只讀 Binance 公開 REST API，不發 Telegram、不下單）。
+
+### 執行方式
+
+```bash
+# 單一策略
+python backtest/run.py --strategy long_breakout
+python backtest/run.py --strategy short_bounce
+python backtest/run.py --strategy death_cross_short
+
+# 三個策略全跑
+python backtest/run.py --strategy all
+
+# 指定回測天數（預設 30 天）
+python backtest/run.py --strategy long_breakout --days 30
+
+# 強制重新下載資料（不使用快取）
+python backtest/run.py --strategy all --no-cache
+```
+
+### 輸出
+
+每個策略產出一份 CSV，路徑：`backtest/results/{strategy}_{YYYYMMDD}.csv`
+
+| 欄位 | 說明 |
+|------|------|
+| `symbol` | 交易對 |
+| `signal_time` | 訊號時間（UTC+8） |
+| `direction` | LONG / SHORT |
+| `entry_price` | 進場價（訊號收盤價） |
+| `stop_loss` | 止損位 |
+| `risk_1r_pct` | 每 1R 佔進場價的 % |
+| `max_r_reached` | 止損前最高到達的 R 數（整數 0~10） |
+| `stop_hit` | 是否觸及止損 |
+
+### 注意事項
+
+- 首次執行需下載所有幣種歷史資料，約需 20-30 分鐘；資料快取於 `backtest/cache/`，之後再執行只需幾分鐘
+- 歷史資料使用 Binance 公開 REST API，**無需 API Key**
+- 建議不要在正式環境高頻交易期間同時執行，以避免 API 頻率衝突
 
 ---
 

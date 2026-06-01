@@ -97,7 +97,7 @@ async def load_historical_data_batch(client, symbols):
             async with hist_semaphore:
                 try:
                     # 載入策略用 OHLC（4h / 15m）
-                    ohlc_4h = await load_historical_klines_ohlc(client, symbol, "4h", 50)
+                    ohlc_4h = await load_historical_klines_ohlc(client, symbol, "4h", 200)
                     if ohlc_4h:
                         symbol_state[symbol]["kline_4h_ohlc"].extend(ohlc_4h)
 
@@ -176,7 +176,7 @@ async def initialize_symbols(client):
                     "last_kline_close_time_15m":    0,
                     "last_kline_close_time_1h":     0,
                     "last_kline_close_time_daily":  0,
-                    "kline_4h_ohlc":     deque(maxlen=50),
+                    "kline_4h_ohlc":     deque(maxlen=200),
                     "kline_15m_ohlc":    deque(maxlen=200),
                     "kline_1h_ohlc":     deque(maxlen=250),
                     "kline_daily_ohlc":  deque(maxlen=250),
