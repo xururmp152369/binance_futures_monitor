@@ -380,6 +380,13 @@ python backtest/run.py --strategy long_breakout --days 30
 
 # 強制重新下載資料（不使用快取）
 python backtest/run.py --strategy all --no-cache
+
+# 指定幣種快速測試
+python backtest/run.py --strategy long_breakout --symbols BTCUSDT,ETHUSDT
+
+# 帶帳戶設定計算損益（需設定 ENCRYPTION_KEY）
+python backtest/run.py --strategy all --account 帳號名稱
+python backtest/run.py --strategy all --account 帳號名稱 --days 30
 ```
 
 ### 輸出
