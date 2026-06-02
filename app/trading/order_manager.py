@@ -56,28 +56,47 @@ async def _get_open_positions(client: AsyncClient) -> list[dict]:
 
 
 async def _cancel_close_position_orders(client: AsyncClient, symbol: str, exit_side: str) -> int:
-    """取消指定方向的所有 closePosition 止損/止盈訂單，回傳取消數量。
-    取消後等待 0.5s 讓 Binance 處理完成。
+    """取消指定方向的所有 closePosition 止損/止盈條件單，回傳取消數量。
+
+    Binance 的 closePosition 條件單存在 /fapi/v1/openAlgoOrders，
+    無法透過 /fapi/v1/openOrders 查詢，須改走 algo 端點取消。
     """
     try:
-        open_orders = await client.futures_get_open_orders(symbol=symbol)
+        raw = await client.futures_get_open_algo_orders(symbol=symbol)
+        algo_orders = raw if isinstance(raw, list) else raw.get("orders", [])
         cancel_ids = [
-            o["orderId"] for o in open_orders
+            o["algoId"] for o in algo_orders
             if (o.get("closePosition") is True
                 or str(o.get("closePosition", "")).lower() == "true")
             and o.get("side") == exit_side
         ]
-        for oid in cancel_ids:
+        for algo_id in cancel_ids:
             try:
-                await client.futures_cancel_order(symbol=symbol, orderId=oid)
+                await client.futures_cancel_algo_order(algoId=algo_id)
             except Exception as ce:
-                log.warning(f"[自動開單] {symbol} 取消訂單 {oid} 失敗: {ce}")
+                log.warning(f"[自動開單] {symbol} 取消條件單 algoId={algo_id} 失敗: {ce}")
         if cancel_ids:
             await asyncio.sleep(0.5)
         return len(cancel_ids)
     except Exception as e:
-        log.warning(f"[自動開單] {symbol} 取消 closePosition 訂單失敗: {e}")
+        log.warning(f"[自動開單] {symbol} 取消 closePosition 條件單失敗: {e}")
         return 0
+
+
+async def _get_close_position_algo_orders(client: AsyncClient, symbol: str, side: str) -> list[dict]:
+    """回傳指定方向的所有 closePosition algo 條件單（止損＋止盈）。"""
+    try:
+        raw = await client.futures_get_open_algo_orders(symbol=symbol)
+        orders = raw if isinstance(raw, list) else raw.get("orders", [])
+        return [
+            o for o in orders
+            if (o.get("closePosition") is True
+                or str(o.get("closePosition", "")).lower() == "true")
+            and o.get("side") == side
+        ]
+    except Exception as e:
+        log.warning(f"[自動開單] {symbol} 查詢 closePosition algo 條件單失敗: {e}")
+        return []
 
 
 async def _place_orders_for_user(
@@ -158,14 +177,19 @@ async def _place_orders_for_user(
         log.info(f"[自動開單] {symbol} 槓桿設為 {leverage}x")
 
         if not is_add_on:
-            # 首次開倉：清除所有殘留條件單，避免舊策略干擾
+            # 首次開倉：清除所有殘留條件單（一般掛單 + closePosition algo 單），重新設置 SL/TP
             try:
-                await client.futures_cancel_all_algo_open_orders(symbol=symbol)
-                await asyncio.sleep(0.5)
-                log.info(f"[自動開單] {symbol} 已清除舊條件單")
+                await client.futures_cancel_all_open_orders(symbol=symbol)
+                log.info(f"[自動開單] {symbol} 已取消所有一般掛單")
+                await asyncio.sleep(0.3)
             except Exception as e:
-                log.warning(f"[自動開單] {symbol} 清除舊條件單失敗（忽略）: {e}")
-        # 加倉不在開倉前取消（保留現有止損保護），開倉成交後再更新
+                log.warning(f"[自動開單] {symbol} 取消一般掛單失敗（忽略）: {e}")
+            cancelled_b = await _cancel_close_position_orders(client, symbol, "BUY")
+            cancelled_s = await _cancel_close_position_orders(client, symbol, "SELL")
+            total = cancelled_b + cancelled_s
+            if total > 0:
+                log.info(f"[自動開單] {symbol} 已清除 {total} 個舊 closePosition 條件單")
+        # 加倉：保留量化止盈掛單，開倉成交後統一更新 closePosition 條件單
 
         # 計算下單量
         entry_price                    = signal["close"]
@@ -239,9 +263,21 @@ async def _place_orders_for_user(
 
         await asyncio.sleep(1)
 
-        # 加倉：開倉成交後取消舊 closePosition 止損/止盈，再設置新的
+        # 加倉：先記錄現有止盈價，取消舊 closePosition 條件單，再重新設置
         # 非 closePosition 的分批止盈（有數量的）不受影響，保留原止盈點位
+        existing_close_tp_price: float | None = None
         if is_add_on:
+            existing_orders = await _get_close_position_algo_orders(client, symbol, exit_side)
+            tp_order = next(
+                (o for o in existing_orders if o.get("algoType") == "TAKE_PROFIT_MARKET"),
+                None,
+            )
+            if tp_order:
+                raw_tp = float(tp_order.get("triggerPrice") or tp_order.get("stopPrice") or 0)
+                if raw_tp > 0:
+                    existing_close_tp_price = raw_tp
+                    log.info(f"[自動開單] {symbol} 加倉：記錄現有止盈價 {existing_close_tp_price:.6f}")
+
             cancelled = await _cancel_close_position_orders(client, symbol, exit_side)
             if cancelled > 0:
                 log.info(f"[自動開單] {symbol} 加倉：已取消 {cancelled} 個舊 closePosition 條件單")
@@ -289,6 +325,11 @@ async def _place_orders_for_user(
             is_last  = (i == last_idx)
 
             if is_last:
+                # 加倉時保留對持有者更有利的止盈價
+                if existing_close_tp_price is not None:
+                    tp_price = max(tp_price, existing_close_tp_price) if is_long \
+                               else min(tp_price, existing_close_tp_price)
+                    log.info(f"[自動開單] {symbol} 加倉止盈調整後 stopPrice={tp_price:.6f}")
                 # closePosition 最後一筆止盈：-4130 時再次清除後重試一次
                 for tp_attempt in range(2):
                     try:
