@@ -54,7 +54,6 @@ def _init_symbol_state(symbol: str) -> None:
         "kline_daily_ohlc": deque(maxlen=_DEQUE_MAXLEN["1d"]),
     }
     models.strategy_state.pop(symbol, None)
-    models.short_strategy_state.pop(symbol, None)
     models.death_cross_state.pop(symbol, None)
 
 
@@ -195,7 +194,6 @@ def run_backtest(
 def _strategy_to_types(strategies: set[str]) -> set[str]:
     mapping = {
         "long_breakout":     "type1",
-        "short_bounce":      "type2",
         "death_cross_short": "type3",
     }
     return {mapping[s] for s in strategies if s in mapping}

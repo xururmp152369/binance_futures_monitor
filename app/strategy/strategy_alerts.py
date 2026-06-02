@@ -7,7 +7,6 @@ log = setup_logging()
 
 _SIGNAL_STRATEGY_KEY = {
     "type1": "long_breakout",
-    "type2": "short_bounce",
     "type3": "death_cross_short",
 }
 
@@ -53,35 +52,6 @@ def format_type1_alert(symbol: str, signal: dict) -> str:
         f"🔴 止損：`{_fmt_price(stop)}`（放量起始，-{stop_pct:.2f}%）\n"
         f"\n"
         f"📦 盤整區間：`{_fmt_price(bottom)}` ～ `{_fmt_price(top)}`（幅度 {range_pct:.1f}%）\n"
-        f"[📈 查看圖表](https://www.binance.com/zh-TC/futures/{symbol})"
-    )
-
-
-def format_type2_alert(symbol: str, signal: dict) -> str:
-    sym_display  = symbol.replace("USDT", "USDT.P")
-    close        = signal["close"]
-    stop         = signal["stop_loss"]
-    entry_level  = signal["entry_level"]
-    resistance   = signal["short_resistance"]
-    vol_r        = signal["vol_ratio"]
-    candle_str   = datetime.fromtimestamp(signal["candle_open_time_ms"] / 1000).strftime("%Y/%m/%d %H:%M")
-
-    stop_pct  = (stop  - close) / close * 100
-    entry_pct = (entry_level - close) / close * 100
-
-    return (
-        f"🎯 *策略訊號 — Type 2 跌破做空*\n"
-        f"幣種：`{sym_display}` ｜ {_now_str()}\n"
-        f"\n"
-        f"⏰ 跌破 K 棒：`{candle_str}`（15m）\n"
-        f"\n"
-        f"💰 收盤：`{_fmt_price(close)}`\n"
-        f"🔻 跌破線：`{_fmt_price(entry_level)}` (-{entry_pct:.2f}%)\n"
-        f"⬆️ 壓力位：`{_fmt_price(resistance)}`\n"
-        f"📊 量能：`{vol_r:.1f}×` 均值\n"
-        f"\n"
-        f"🔴 止損：`{_fmt_price(stop)}`（拒絕 K 最高，+{stop_pct:.2f}%）\n"
-        f"\n"
         f"[📈 查看圖表](https://www.binance.com/zh-TC/futures/{symbol})"
     )
 
@@ -133,8 +103,6 @@ async def send_strategy_alert(symbol: str, signal: dict) -> bool:
 
         if sig_type == "type1":
             text = format_type1_alert(symbol, signal)
-        elif sig_type == "type2":
-            text = format_type2_alert(symbol, signal)
         elif sig_type == "type3":
             text = format_type3_alert(symbol, signal)
         else:

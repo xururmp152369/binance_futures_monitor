@@ -10,7 +10,6 @@ log = setup_logging()
 # 訊號類型 → 設定中的策略代號
 _SIGNAL_TO_STRATEGY = {
     "type1": "long_breakout",
-    "type2": "short_bounce",
     "type3": "death_cross_short",
 }
 

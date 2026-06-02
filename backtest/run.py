@@ -28,11 +28,10 @@ from backtest.engine import run_backtest
 from backtest.evaluator import evaluate_all, evaluate_all_with_account
 from backtest.reporter import write_all_reports, write_all_account_reports
 
-ALL_STRATEGIES = {"long_breakout", "short_bounce", "death_cross_short"}
+ALL_STRATEGIES = {"long_breakout", "death_cross_short"}
 
 _TYPE_TO_STRATEGY = {
     "type1": "long_breakout",
-    "type2": "short_bounce",
     "type3": "death_cross_short",
 }
 

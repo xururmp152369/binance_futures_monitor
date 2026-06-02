@@ -26,12 +26,12 @@ _CFG = {
 
 _CFG_SHORT = {
     **_CFG,
-    "DEV_STRATEGY":      ["short_bounce"],
+    "DEV_STRATEGY":      ["death_cross_short"],
     "SHORT_ORDER_LIMIT": 5,
 }
 
 _SIGNAL_LONG  = {"type": "type1", "close": 100.0, "stop_loss": 95.0}
-_SIGNAL_SHORT = {"type": "type2", "close": 100.0, "stop_loss": 105.0}
+_SIGNAL_SHORT = {"type": "type3", "close": 100.0, "stop_loss": 105.0}
 _SYMBOL       = "BTCUSDT"
 
 
@@ -143,7 +143,7 @@ def test_multi_tp_last_is_close_position():
 # ─── 空頭開倉 ──────────────────────────────────────────────────────────────────
 
 def test_short_signal_uses_sell_entry():
-    """type2 訊號 → 市價 SELL 開倉，止損/止盈用 BUY。"""
+    """type3 訊號 → 市價 SELL 開倉，止損/止盈用 BUY。"""
     client = _make_client(
         futures_create_order=AsyncMock(
             return_value={"avgPrice": "100.0", "orderId": 1}

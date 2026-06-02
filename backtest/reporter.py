@@ -8,13 +8,11 @@ TZ_TAIPEI   = timezone(timedelta(hours=8))
 
 _STRATEGY_NAME = {
     "type1": "long_breakout",
-    "type2": "short_bounce",
     "type3": "death_cross_short",
 }
 
 _DIRECTION = {
     "type1": "LONG",
-    "type2": "SHORT",
     "type3": "SHORT",
 }
 
