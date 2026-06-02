@@ -209,6 +209,22 @@ ATR 使用 Wilder 平均法（簡化為最近 14 根 True Range 的平均值）�
 
 ---
 
+## 涉及檔案（移除此策略時需全部檢查）
+
+| 檔案 | 要找什麼 |
+|------|---------|
+| `app/strategy/death_cross_short.py` | 整個檔案刪除 |
+| `app/strategy/state_machine.py` | `from .death_cross_short import ...` 及所有 dispatch 呼叫 |
+| `app/strategy/strategy_alerts.py` | `"type3"` 訊號格式化函式與路由 |
+| `app/setting/models.py` | `death_cross_state` 容器定義 |
+| `app/datacenter/binance_opendata.py` | `on_new_1h_candle` / `on_new_daily_candle` dispatch、`death_cross_state.pop()` 幣種清理 |
+| `app/trading/order_manager.py` | `_SIGNAL_TO_STRATEGY` 的 `"type3"` key、`raw_type == "type1"` 的 else 分支（空頭方向判斷） |
+| `app/command/command.py` | `/tracking dc` 指令的 `args` 清單與 `DeathCrossPhase.WATCHING` 查詢 |
+| `backtest/run.py` | `ALL_STRATEGIES` 清單、docstring 範例指令 |
+| `tests/` | `test_death_cross*.py` 相關測試檔案 |
+
+---
+
 ## 關鍵參數
 
 | 參數 | 預設值 | 說明 |

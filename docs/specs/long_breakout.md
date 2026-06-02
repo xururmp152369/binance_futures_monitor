@@ -205,6 +205,22 @@ prev_gain > METHOD_B_RELAXED_THRESHOLD
 
 ---
 
+## 涉及檔案（移除此策略時需全部檢查）
+
+| 檔案 | 要找什麼 |
+|------|---------|
+| `app/strategy/long_breakout.py` | 整個檔案刪除 |
+| `app/strategy/state_machine.py` | `from .long_breakout import ...` 及所有 dispatch 呼叫 |
+| `app/strategy/strategy_alerts.py` | `"type1"` 訊號格式化函式與路由 |
+| `app/setting/models.py` | `strategy_state` 容器定義 |
+| `app/datacenter/binance_opendata.py` | `on_new_4h_candle` / `on_new_15m_candle` dispatch、`strategy_state.pop()` 幣種清理 |
+| `app/trading/order_manager.py` | `_SIGNAL_TO_STRATEGY` 的 `"type1"` key、`raw_type == "type1"` 方向判斷 |
+| `app/command/command.py` | `/tracking long` 指令的 `args` 清單與 `StrategyPhase.TRACKING` 查詢 |
+| `backtest/run.py` | `ALL_STRATEGIES` 清單、docstring 範例指令 |
+| `tests/` | `test_long_breakout*.py` 相關測試檔案 |
+
+---
+
 ## 關鍵參數
 
 | 參數 | 預設值 | 說明 |
