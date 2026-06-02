@@ -422,7 +422,7 @@ async def ready_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def tracking_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/tracking <long|short|dc> — 列出進行中的多頭 TRACKING、空頭 SHORT_WATCHING 或死亡叉 WATCHING 幣種。"""
+    """/tracking <long|dc> — 列出進行中的多頭 TRACKING 或死亡叉 WATCHING 幣種。"""
     args = context.args
     if not args or args[0].lower() not in ("long", "dc"):
         await update.message.reply_text(

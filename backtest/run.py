@@ -2,7 +2,6 @@
 
 用法：
     python backtest/run.py --strategy long_breakout
-    python backtest/run.py --strategy short_bounce
     python backtest/run.py --strategy death_cross_short
     python backtest/run.py --strategy all
     python backtest/run.py --strategy long_breakout --days 30 --no-cache

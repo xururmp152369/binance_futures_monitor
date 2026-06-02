@@ -38,10 +38,7 @@ def reset_to_idle(symbol: str, reason: str = "") -> None:
 
 # ─── 策略協調器 ──────────────────────────────────────────────────────────────
 
-def on_new_4h_candle(
-    symbol: str, candle: tuple,
-    direction: Direction = Direction.LONG,
-) -> None:
+def on_new_4h_candle(symbol: str, candle: tuple, direction: Direction = Direction.LONG) -> None:
     on_new_4h_candle_long(symbol, candle, direction)
 
 

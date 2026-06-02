@@ -63,24 +63,6 @@ def _reset_to_idle(symbol: str, reason: str, state_dict: dict) -> None:
     state_dict[symbol] = new
 
 
-def _reset_to_idle_with_event(
-    symbol: str, reason: str, state_dict: dict, candle: tuple | None,
-) -> dict | None:
-    """廢棄時重置，若提供 candle 且當前非 IDLE 則回傳廢棄事件，供空頭策略使用。"""
-    current = state_dict.get(symbol, {})
-    event = None
-    if current.get("phase") not in (None, StrategyPhase.IDLE) and candle is not None:
-        open_time_ms, _o, high, low, _c, _v = candle
-        event = {
-            "event":            "abandoned",
-            "abandonment_high": high,
-            "abandonment_low":  low,
-            "ts":               open_time_ms / 1000,
-        }
-    _reset_to_idle(symbol, reason, state_dict)
-    return event
-
-
 def reset_long_to_idle(symbol: str, reason: str = "") -> None:
     _reset_to_idle(symbol, reason, models.strategy_state)
 
@@ -165,25 +147,21 @@ def _maybe_transition_to_ready(st: dict, current_ts: float, symbol: str) -> None
 def on_new_4h_candle_long(
     symbol: str, candle: tuple,
     direction: Direction = Direction.LONG,
-) -> dict | None:
-    """處理新 4h K 棒收盤，更新多頭狀態機。
-
-    廢棄時回傳 {"event": "abandoned", "abandonment_high": ..., "abandonment_low": ..., "ts": ...}，
-    供協調器通知空頭策略；正常情況回傳 None。
-    """
+) -> None:
+    """處理新 4h K 棒收盤，更新多頭狀態機。"""
     st = get_or_init_long_state(symbol)
     open_time_ms, open_, high, low, close, quote_volume = candle
     current_ts = open_time_ms / 1000
 
-    # 廢棄：實體收破廢棄線 → 回傳事件供空頭策略使用
+    # 廢棄：實體收破廢棄線
     if st["phase"] != StrategyPhase.IDLE and st["consolidation_low"] is not None:
         if is_invalidated(open_, close, st, direction):
-            return _reset_to_idle_with_event(
+            _reset_to_idle(
                 symbol,
                 f"實體={body_barrier_price(open_, close, direction):.6f} 破廢棄線={invalidation_level(st, direction):.6f}",
                 models.strategy_state,
-                candle,
             )
+            return
 
     # 延伸：TRACKING/READY 創新高（多）或新低（空）→ 更新邊界、重置計時
     if st["phase"] != StrategyPhase.IDLE and st["consolidation_high"] is not None:

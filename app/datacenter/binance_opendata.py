@@ -190,16 +190,15 @@ async def initialize_symbols(client):
             log.info(f"歷史資料載入完成")
 
         # 清理無效幣種
-        from ..setting.models import short_strategy_state, death_cross_state
+        from ..setting.models import death_cross_state
         for s in list(symbol_state):
             if s not in valid:
                 log.info(f"幣種 {s} 不再符合條件，開始清理...")
                 symbol_state.pop(s, None)
                 price_history.pop(s, None)
                 strategy_state.pop(s, None)
-                short_strategy_state.pop(s, None)
                 death_cross_state.pop(s, None)
-                log.info(f"幣種 {s} 已清理")   
+                log.info(f"幣種 {s} 已清理")
 
     except Exception as e:
         log.error(f"初始化幣種失敗: {e}")
