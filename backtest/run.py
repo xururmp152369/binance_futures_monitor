@@ -117,7 +117,7 @@ async def main() -> None:
 
     # 下載資料
     print(f"[run] 開始下載歷史資料（no_cache={args.no_cache}）…")
-    all_data = await fetch_all_symbols(symbols, no_cache=args.no_cache)
+    all_data = await fetch_all_symbols(symbols, backtest_days=args.days, no_cache=args.no_cache)
     print(f"[run] 下載完成，共 {len(all_data)} 個幣種有資料")
 
     # 執行回測

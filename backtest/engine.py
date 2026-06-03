@@ -38,6 +38,12 @@ _DEQUE_MAXLEN = {
     "1d": 250,
 }
 
+# 正式系統 replay 覆蓋天數（超過此天數的回測不限制狀態機啟動點）
+_REPLAY_DAYS = {
+    "4h": _DEQUE_MAXLEN["4h"] * 4 / 24,  # 200根 × 4h ≈ 33天
+    "1d": _DEQUE_MAXLEN["1d"],            # 250根 × 1d = 250天
+}
+
 
 # ─── 狀態初始化 ──────────────────────────────────────────────────────────────
 
@@ -109,14 +115,16 @@ def run_symbol_backtest(
     backtest_start_ms = _backtest_start_ms(data_15m, backtest_days)
 
     # 計算各時框狀態機的啟動邊界（open_time_ms）
-    # 只有在 candle[0] >= 此邊界後才呼叫對應的狀態機函數
+    # 短期回測（≤ replay 天數）：對齊正式系統啟動 replay 窗口，避免抓到正式系統看不到的舊泵
+    # 長期回測（> replay 天數）：從最早可用資料開始，讓狀態機完整模擬全期行為
     sm_start: dict[str, int] = {}
     for tf in ("4h", "1d"):
         candles = candles_by_tf.get(tf, [])
         maxlen  = _DEQUE_MAXLEN[tf]
-        sm_start[tf] = (
-            candles[-maxlen][0] if len(candles) >= maxlen else 0
-        )
+        if backtest_days > _REPLAY_DAYS[tf]:
+            sm_start[tf] = 0  # 長期回測：全程呼叫
+        else:
+            sm_start[tf] = candles[-maxlen][0] if len(candles) >= maxlen else 0
 
     events    = _build_event_queue(candles_by_tf)
     sym_state = models.symbol_state[symbol]
