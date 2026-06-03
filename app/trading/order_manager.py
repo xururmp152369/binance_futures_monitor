@@ -178,7 +178,7 @@ async def _place_orders_for_user(
         if not is_add_on:
             # 首次開倉：清除所有殘留條件單（一般掛單 + closePosition algo 單），重新設置 SL/TP
             try:
-                await client.futures_cancel_all_open_orders(symbol=symbol)
+                await client.futures_cancel_all_algo_open_orders(symbol=symbol)
                 log.info(f"[自動開單] {symbol} 已取消所有一般掛單")
                 await asyncio.sleep(0.3)
             except Exception as e:
