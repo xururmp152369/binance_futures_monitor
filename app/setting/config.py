@@ -18,21 +18,36 @@ EXCLUDE_SYMBOLS = {"USDC"}
 QUOTE_VOLUME = 0 # 24h成交量額（USDT）
 BATCH_SIZE = 20 # WebSocket 批次數量
 
-# ================== 策略參數 ==================
+# ================== 多頭策略參數（long_breakout / Type 1）==================
 # ── 觸發 K 棒（單根 4h 帶量陽線） ──────────────────────────────────────────────
-PUMP_THRESHOLD            = 3      # 觸發 K 單根漲幅門檻（%）：(close-open)/open × 100
-TRIGGER_VOLUME_MULT       = 3      # 觸發 K 量能倍數（當根量需 > 前 N 根均量 × 此值）
-TRIGGER_VOLUME_BASELINE_N = 12     # 觸發量能基準根數（前 N 根 4h K 棒，排除當根）
+# PUMP_THRESHOLD 依 BTC 24h 漲幅動態選擇
+PUMP_THRESHOLD_BULL        = 3.5   # BTC 牛市（24h > BTC_BULL_THRESHOLD）時的觸發漲幅門檻（%）
+PUMP_THRESHOLD_NORMAL      = 3.0   # BTC 震盪市時的觸發漲幅門檻（%）
+PUMP_THRESHOLD_BEAR        = 2.5   # BTC 熊市（24h < BTC_BEAR_THRESHOLD）時的觸發漲幅門檻（%）
+BTC_BULL_THRESHOLD         = 3.0   # 判定牛市：BTC 1d K 漲幅超過此值（%）
+BTC_BEAR_THRESHOLD         = -3.0  # 判定熊市：BTC 1d K 跌幅低於此值（%）
+TRIGGER_VOLUME_MULT        = 3     # 觸發 K 量能倍數（當根量需 > 前 N 根均量 × 此值，嚴格 >）
+TRIGGER_VOLUME_BASELINE_N  = 12    # 觸發量能基準根數（前 N 根 4h K 棒，排除當根）
 # ── 盤整 ────────────────────────────────────────────────────────────────────────
 CONSOLIDATION_MIN_HOURS      = 12   # 最低盤整時數（從最後一次創新高起算）→ READY
-METHOD_B_GAIN_ADVANTAGE      = 10.0 # Method B：新觸發 K 漲幅需超過前觸發 K 漲幅 × (1 + N/100)，即比例優勢 N%
-METHOD_B_RELAXED_THRESHOLD   = 10.0 # 原始觸發 K 漲幅超過此值時，Method B 不需 N+1%，滿足觸發條件即完整重置
-# ── Type 1 進場訊號（15m 帶量突破） ────────────────────────────────────────────
-BREAKOUT_VOLUME_MULT      = 3.5    # Type1 量能倍數（相對前 192 根 15m 均量）
-BREAKOUT_BODY_PCT         = 0.005  # Type1 實體超頂幅度（0.5%）：close > top × (1 + N)
-LOOKBACK_VOLUME_MULT      = 2.5    # Type1 回掃止損放量門檻（低於此倍數即停止往回）
-# ── 冷卻 ────────────────────────────────────────────────────────────────────────
-STRATEGY_COOLDOWN         = 14400  # 策略告警冷卻秒數（4 小時）
+METHOD_B_GAIN_ADVANTAGE      = 10.0 # Method B：新觸發 K 實體漲幅需超過前觸發 K 漲幅 × (1 + N/100)
+METHOD_B_RELAXED_THRESHOLD   = 10.0 # 前觸發 K 漲幅超過此值時，Method B 直接完整重置（不比較漲幅）
+METHOD_B_VOLUME_RATIO        = 0.8  # Method B 體量驗證：新 K volume / 前觸發 K volume 最低比例
+# ── Type 1 進場訊號（15m 帶量突破，V2 多層確認） ─────────────────────────────────
+BREAKOUT_VOLUME_MULT      = 3.5    # 突破量能倍數（相對前 192 根 15m 均量，>=）
+BREAKOUT_BODY_PCT         = 0.005  # 實體超頂幅度（0.5%）：close > top × (1 + N)
+BREAKOUT_BODY_RATIO       = 0.50   # 進場 K 實體強度：(close-open)/(high-low) ≥ 此值
+BREAKOUT_ATR_PERIOD       = 14     # ATR 週期（4h K 棒根數）
+BREAKOUT_ATR_RATIO        = 0.30   # 突破 ATR 力度：close - top ≥ ATR × 此值
+LOOKBACK_VOLUME_MULT      = 2.5    # 止損回掃放量門檻倍數（非連續，回掃所有放量 K）
+# ── Pump Candle 有效性驗證 ────────────────────────────────────────────────────
+PUMP_CANDLE_TAKER_BUY_MIN = 0.0    # Pump Candle 最低 Taker Buy Ratio（0.0 = 停用此過濾）
+# ── 技術面濾波（SMA 200） ─────────────────────────────────────────────────────
+TREND_FILTER_SMA_PERIOD   = 200    # 技術面濾波 SMA 週期（4h K 收盤）
+TREND_FILTER_ENABLED      = True   # 是否啟用技術面濾波（False 可臨時關閉）
+# ── 冷卻（三層機制） ──────────────────────────────────────────────────────────
+STRATEGY_COOLDOWN                = 14400  # 全局告警冷卻秒數（4h），三層冷卻第二層
+LIQUIDATION_BUFFER_CONFIRM_COUNT = 3      # 即時廢棄連續幾次掃描確認才執行（每次 10 秒）
 
 # ================== 死亡叉策略參數（Type 3）==================
 # ── Layer 1/2 日線均線 ───────────────────────────────────────────────────────────

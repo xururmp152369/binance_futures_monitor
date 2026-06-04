@@ -43,15 +43,27 @@
 
 | 參數 | 預設值 | 說明 |
 |------|--------|------|
-| `PUMP_THRESHOLD` | 3 | 觸發 K 單根漲幅門檻（%） |
+| `PUMP_THRESHOLD_BULL` | 3.5 | BTC 牛市（24h > 3%）時的觸發漲幅門檻（%） |
+| `PUMP_THRESHOLD_NORMAL` | 3.0 | BTC 震盪市時的觸發漲幅門檻（%） |
+| `PUMP_THRESHOLD_BEAR` | 2.5 | BTC 熊市（24h < -3%）時的觸發漲幅門檻（%） |
+| `BTC_BULL_THRESHOLD` | 3.0 | 判定牛市的 BTC 1d 漲幅門檻（%） |
+| `BTC_BEAR_THRESHOLD` | -3.0 | 判定熊市的 BTC 1d 跌幅門檻（%） |
 | `TRIGGER_VOLUME_MULT` | 3 | 觸發 K 量能倍數（嚴格 `>`，前 12 根 4h 均量） |
 | `CONSOLIDATION_MIN_HOURS` | 12 | 最低盤整時數（從最後一次創新高起算） |
-| `BREAKOUT_VOLUME_MULT` | 3.5 | Type 1 突破量能倍數（前 192 根 15m 均量） |
-| `BREAKOUT_BODY_PCT` | 0.005 | Type 1 實體超頂幅度（0.5%） |
-| `LOOKBACK_VOLUME_MULT` | 2.5 | Type 1 止損回掃放量門檻倍數 |
 | `METHOD_B_GAIN_ADVANTAGE` | 10.0 | Method B 新觸發 K 需超過原實體漲幅的比例優勢（%） |
 | `METHOD_B_RELAXED_THRESHOLD` | 10.0 | 原觸發 K 實體漲幅超過此值時，Method B 直接重置 |
-| `STRATEGY_COOLDOWN` | 14400 | 告警冷卻（秒，4h，兩策略共用） |
+| `METHOD_B_VOLUME_RATIO` | 0.8 | Method B 體量驗證：新 K volume / 前觸發 K volume 最低比例 |
+| `BREAKOUT_VOLUME_MULT` | 3.5 | Type 1 突破量能倍數（前 192 根 15m 均量） |
+| `BREAKOUT_BODY_PCT` | 0.005 | Type 1 實體超頂幅度（0.5%） |
+| `BREAKOUT_BODY_RATIO` | 0.60 | Type 1 進場 K 實體強度門檻（(close-open)/(high-low) ≥ 60%） |
+| `BREAKOUT_ATR_PERIOD` | 14 | Type 1 ATR 計算週期（4h K 棒根數） |
+| `BREAKOUT_ATR_RATIO` | 0.30 | Type 1 突破 ATR 力度：close - top ≥ ATR × 30% |
+| `LOOKBACK_VOLUME_MULT` | 2.5 | Type 1 止損回掃放量門檻倍數（非連續） |
+| `PUMP_CANDLE_TAKER_BUY_MIN` | 0.65 | Pump Candle 最低 Taker Buy Ratio（> 65%） |
+| `TREND_FILTER_SMA_PERIOD` | 200 | 技術面濾波 SMA 週期（4h K 收盤） |
+| `TREND_FILTER_ENABLED` | True | 是否啟用技術面濾波（False 可臨時關閉） |
+| `STRATEGY_COOLDOWN` | 14400 | 全局告警冷卻（秒，4h，三層冷卻第二層） |
+| `LIQUIDATION_BUFFER_CONFIRM_COUNT` | 3 | 即時廢棄連續確認次數（每次 10 秒） |
 
 ### 死亡叉策略（death_cross_short）
 
@@ -105,9 +117,14 @@ python backtest/run.py --strategy death_cross_short
 python backtest/run.py --strategy all
 python backtest/run.py --strategy all --days 30 --no-cache
 python backtest/run.py --strategy all --account 帳號名稱
+python backtest/run.py --strategy all --start 2025-06-04 --end 2026-06-04
+python backtest/run.py --strategy all --start 2025-06-04  # --end 預設今天
 ```
 
-- 首次執行約需 20-30 分鐘下載歷史資料；快取於 `backtest/cache/`
+- `--days`：從今天往前推算 N 天（預設 30）
+- `--start`/`--end`：指定固定區間，系統自動追加 260 天暖機；優先於 `--days`
+- 首次執行 30 天約需 20-30 分鐘；一年區間全幣種約需 4-5 小時；快取於 `backtest/cache/`
+- 區間模式快取永久有效（歷史資料不變）；`--days` 模式每日更新
 - 輸出 CSV：`backtest/results/{strategy}_{YYYYMMDD}.csv`
 - 無需 API Key（Binance 公開 REST API）
 

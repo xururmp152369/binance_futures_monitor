@@ -30,7 +30,7 @@ def evaluate_trade(
     stop_hit      = False
 
     for candle in subsequent_15m_candles[:EVAL_WINDOW_CANDLES]:
-        _, _, high, low, _close, _ = candle
+        _, _, high, low, _close, _, _ = candle
 
         if is_long:
             if low <= stop:
@@ -141,7 +141,7 @@ def evaluate_trade_with_account(
     pnl           = 0.0
 
     for candle in subsequent_15m_candles[:EVAL_WINDOW_CANDLES]:
-        _, _, high, low, _close, _ = candle
+        _, _, high, low, _close, _, _ = candle
 
         # 先檢查止損
         if is_long:

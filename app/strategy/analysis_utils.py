@@ -145,6 +145,45 @@ def get_1h_atr(symbol: str, period: int = 14) -> float | None:
     return calc_atr(list(ohlc), period)
 
 
+# ─── SMA 計算 ─────────────────────────────────────────────────────────────────
+
+def calc_sma(values: list[float], period: int) -> float | None:
+    """計算簡單移動平均。values 需按時間順序排列（舊→新）。"""
+    if len(values) < period:
+        return None
+    return sum(values[-period:]) / period
+
+
+def get_4h_sma(symbol: str, period: int) -> float | None:
+    """從 kline_4h_ohlc 的 close 序列計算 SMA。至少需要 period 根 K 棒。"""
+    ohlc = models.symbol_state.get(symbol, {}).get("kline_4h_ohlc")
+    if not ohlc or len(ohlc) < period:
+        return None
+    closes = [c[4] for c in ohlc]
+    return calc_sma(closes, period)
+
+
+def get_4h_atr(symbol: str, period: int = 14) -> float | None:
+    """從 kline_4h_ohlc 計算 ATR(period)。至少需要 period + 1 根 K 棒。"""
+    ohlc = models.symbol_state.get(symbol, {}).get("kline_4h_ohlc")
+    if not ohlc or len(ohlc) < period + 1:
+        return None
+    return calc_atr(list(ohlc), period)
+
+
+def get_btc_24h_change() -> float | None:
+    """取 BTCUSDT 最新 1d K 棒的漲跌幅（%）。資料不足時回傳 None。"""
+    ohlc = models.symbol_state.get("BTCUSDT", {}).get("kline_daily_ohlc")
+    if not ohlc:
+        return None
+    last   = list(ohlc)[-1]
+    open_  = last[1]
+    close  = last[4]
+    if open_ <= 0:
+        return None
+    return (close - open_) / open_ * 100
+
+
 # ─── K棒形態分析 ──────────────────────────────────────────────────────────────
 
 def upper_wick_size(open_: float, high: float, close: float) -> float:

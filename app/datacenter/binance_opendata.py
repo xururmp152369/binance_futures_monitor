@@ -62,7 +62,8 @@ async def load_historical_klines_ohlc(client, symbol: str, interval: str, limit:
     4h/15m → [(open_time_ms, open, high, low, close, quote_volume), ...]
     """
     klines = await _fetch_klines(client, symbol, interval, limit)
-    return [(int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[7])) for k in klines]
+    # k[7]=quote_vol, k[10]=takerBuyQuoteAssetVolume（統一 7 欄，與 WebSocket 格式對齊）
+    return [(int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[7]), float(k[10])) for k in klines]
 
 async def load_historical_data_batch(client, symbols):
     """批次載入新幣種的歷史資料。
@@ -230,7 +231,7 @@ def _handle_kline_15m(data: dict) -> tuple | None:
     if close_time <= state["last_kline_close_time_15m"]:
         return None
     state["last_kline_close_time_15m"] = close_time
-    candle = (int(k["t"]), float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]), float(k["q"]))
+    candle = (int(k["t"]), float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]), float(k["q"]), float(k.get("Q", 0)))
     state["kline_15m_ohlc"].append(candle)
     return sym, candle
 
@@ -242,7 +243,7 @@ def _handle_kline_4h(data: dict) -> None:
     if sym not in symbol_state or not k["x"]:
         return
     state  = symbol_state[sym]
-    candle = (int(k["t"]), float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]), float(k["q"]))
+    candle = (int(k["t"]), float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]), float(k["q"]), float(k.get("Q", 0)))
     state["kline_4h_ohlc"].append(candle)
     on_new_4h_candle(sym, candle)
 
@@ -258,7 +259,7 @@ def _handle_kline_1h(data: dict) -> tuple | None:
     if close_time <= state["last_kline_close_time_1h"]:
         return None
     state["last_kline_close_time_1h"] = close_time
-    candle = (int(k["t"]), float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]), float(k["q"]))
+    candle = (int(k["t"]), float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]), float(k["q"]), float(k.get("Q", 0)))
     state["kline_1h_ohlc"].append(candle)
     return sym, candle
 
@@ -274,7 +275,7 @@ def _handle_kline_daily(data: dict) -> None:
     if close_time <= state["last_kline_close_time_daily"]:
         return
     state["last_kline_close_time_daily"] = close_time
-    candle = (int(k["t"]), float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]), float(k["q"]))
+    candle = (int(k["t"]), float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]), float(k["q"]), float(k.get("Q", 0)))
     state["kline_daily_ohlc"].append(candle)
     on_new_daily_candle(sym, candle)
 

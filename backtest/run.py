@@ -9,14 +9,30 @@
     python backtest/run.py --strategy long_breakout --account xururmp152369
     python backtest/run.py --strategy all --account xururmp152369 --days 30
 
+    # 指定區間回測
+    python backtest/run.py --strategy all --start 2025-06-04 --end 2026-06-04
+    python backtest/run.py --strategy all --start 2025-01-01  # --end 預設今天
+
 注意：
   - 同一天多次執行會使用快取資料。若要取得最新 K 棒（如當日訊號），請加 --no-cache。
   - 使用 --account 時需在環境中設定 ENCRYPTION_KEY（與 bot 相同）。
+  - --start/--end 優先於 --days；指定區間時系統自動追加 260 天暖機資料。
 """
 import argparse
 import asyncio
 import sys
 import os
+from datetime import datetime, timedelta, timezone
+
+# 暖機天數：EMA200 日線需要 200 根，加 60 天緩衝
+_WARM_UP_DAYS = 260
+# 評估窗口緩衝（需與 data_fetcher._EVAL_BUFFER 保持一致）
+_EVAL_BUFFER  = 14
+
+
+def _parse_date(s: str) -> datetime:
+    """將 YYYY-MM-DD 解析為 UTC 午夜 datetime。"""
+    return datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
@@ -26,6 +42,7 @@ from backtest.data_fetcher import fetch_usdt_symbols, fetch_all_symbols
 from backtest.engine import run_backtest
 from backtest.evaluator import evaluate_all, evaluate_all_with_account
 from backtest.reporter import write_all_reports, write_all_account_reports
+from app.strategy.long_breakout import print_diag_stats  # [DIAG]
 
 ALL_STRATEGIES = {"long_breakout", "death_cross_short"}
 
@@ -62,6 +79,16 @@ def parse_args() -> argparse.Namespace:
         "--account", "-a",
         type=str, default="",
         help="帳戶名稱，依該帳戶止盈策略計算盈虧（需設定 ENCRYPTION_KEY）",
+    )
+    parser.add_argument(
+        "--start",
+        type=str, default="",
+        help="回測起始日期 YYYY-MM-DD（與 --end 搭配；優先於 --days）",
+    )
+    parser.add_argument(
+        "--end",
+        type=str, default="",
+        help="回測結束日期 YYYY-MM-DD（預設今天）",
     )
     return parser.parse_args()
 
@@ -106,7 +133,35 @@ async def main() -> None:
               f"RISK_AMOUNT={account_cfg.get('RISK_AMOUNT')}  "
               f"RISK_LEVERAGE={account_cfg.get('RISK_LEVERAGE')}×")
 
-    # 取得幣種清單
+    # ── 計算回測時間邊界 ──────────────────────────────────────────────────────
+    if args.start:
+        start_dt = _parse_date(args.start)
+        end_dt   = (
+            _parse_date(args.end)
+            if args.end
+            else datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        )
+        if start_dt >= end_dt:
+            print("[run] 錯誤：--start 必須早於 --end")
+            sys.exit(1)
+
+        range_days        = (end_dt - start_dt).days
+        # 下載天數 = 回測區間 + 暖機期（EMA200）；_calc_pages 會再加 _EVAL_BUFFER
+        backtest_days     = range_days + _WARM_UP_DAYS
+        backtest_start_ms = int(start_dt.timestamp() * 1000)
+        backtest_end_ms   = int(end_dt.timestamp() * 1000)
+        # 抓取結束點往後多 14 天，供區間尾端訊號的評估窗口使用
+        fetch_end_time_ms = int((end_dt + timedelta(days=_EVAL_BUFFER)).timestamp() * 1000)
+
+        end_label = args.end or end_dt.strftime("%Y-%m-%d")
+        print(f"[run] 回測區間：{args.start} → {end_label}（{range_days} 天，含 {_WARM_UP_DAYS} 天暖機）")
+    else:
+        backtest_days     = args.days
+        backtest_start_ms = None
+        backtest_end_ms   = None
+        fetch_end_time_ms = None
+
+    # ── 取得幣種清單 ──────────────────────────────────────────────────────────
     if args.symbols:
         symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
         print(f"[run] 指定幣種：{symbols}")
@@ -117,13 +172,28 @@ async def main() -> None:
 
     # 下載資料
     print(f"[run] 開始下載歷史資料（no_cache={args.no_cache}）…")
-    all_data = await fetch_all_symbols(symbols, backtest_days=args.days, no_cache=args.no_cache)
+    all_data = await fetch_all_symbols(
+        symbols,
+        backtest_days=backtest_days,
+        no_cache=args.no_cache,
+        fetch_end_time_ms=fetch_end_time_ms,
+    )
     print(f"[run] 下載完成，共 {len(all_data)} 個幣種有資料")
 
     # 執行回測
-    print(f"[run] 開始回測（策略={strategies}，回測天數={args.days}）…")
-    signals = run_backtest(all_data, strategies, backtest_days=args.days)
+    range_label = (
+        f"{args.start} → {args.end or datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
+        if args.start else f"最近 {args.days} 天"
+    )
+    print(f"[run] 開始回測（策略={strategies}，{range_label}）…")
+    signals = run_backtest(
+        all_data, strategies,
+        backtest_days=backtest_days,
+        backtest_start_ms=backtest_start_ms,
+        backtest_end_ms=backtest_end_ms,
+    )
     print(f"[run] 收集到 {len(signals)} 筆訊號")
+    print_diag_stats()  # [DIAG]
 
     all_15m = {sym: data.get("15m", []) for sym, data in all_data.items()}
 

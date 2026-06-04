@@ -101,8 +101,13 @@ def run_symbol_backtest(
     symbol: str,
     candles_by_tf: dict[str, list],
     backtest_days: int = 30,
+    backtest_start_ms: int | None = None,
+    backtest_end_ms: int | None = None,
 ) -> list[dict]:
     """回測單一幣種，回傳回測期間偵測到的訊號 list。
+
+    backtest_start_ms: 訊號記錄起點（ms）；None 時由 backtest_days 反推。
+    backtest_end_ms:   訊號記錄終點（ms）；None 表示無上限（取到最後一根）。
 
     對齊正式系統行為：
     - 4h 狀態機只從最後 50 根開始呼叫（對應 replay_historical_4h_candles_long）
@@ -111,8 +116,9 @@ def run_symbol_backtest(
     """
     _init_symbol_state(symbol)
 
-    data_15m          = candles_by_tf.get("15m", [])
-    backtest_start_ms = _backtest_start_ms(data_15m, backtest_days)
+    data_15m = candles_by_tf.get("15m", [])
+    if backtest_start_ms is None:
+        backtest_start_ms = _backtest_start_ms(data_15m, backtest_days)
 
     # 計算各時框狀態機的啟動邊界（open_time_ms）
     # 短期回測（≤ replay 天數）：對齊正式系統啟動 replay 窗口，避免抓到正式系統看不到的舊泵
@@ -167,7 +173,11 @@ def run_symbol_backtest(
         finally:
             _restore_time()
 
-        if signal and in_backtest:
+        in_range = (
+            in_backtest
+            and (backtest_end_ms is None or candle[0] < backtest_end_ms)
+        )
+        if signal and in_range:
             signals.append(signal)
 
     return signals
@@ -179,6 +189,8 @@ def run_backtest(
     all_data: dict[str, dict[str, list]],
     strategies: set[str],
     backtest_days: int = 30,
+    backtest_start_ms: int | None = None,
+    backtest_end_ms: int | None = None,
 ) -> list[dict]:
     """對所有幣種執行回測，回傳過濾後的訊號 list。"""
     type_filter = _strategy_to_types(strategies)
@@ -187,7 +199,11 @@ def run_backtest(
 
     for i, (symbol, candles_by_tf) in enumerate(all_data.items(), 1):
         try:
-            signals  = run_symbol_backtest(symbol, candles_by_tf, backtest_days)
+            signals  = run_symbol_backtest(
+                symbol, candles_by_tf, backtest_days,
+                backtest_start_ms=backtest_start_ms,
+                backtest_end_ms=backtest_end_ms,
+            )
             filtered = [s for s in signals if s.get("type") in type_filter]
             all_signals.extend(filtered)
         except Exception as exc:
