@@ -20,6 +20,7 @@ from ..setting.config import (
     DC_ALERT_WINDOW_HOURS, DC_MAX_ROLLBACK_HOURS,
     DC_PRICE_RECOVERY_PCT, DC_MAX_ENTRIES_PER_ALERT,
     DC_REJECTION_BODY_PCT, DC_ENGULF_BODY_RATIO, DC_ENGULF_VOLUME_RATIO,
+    DC_RISK_PCT_MIN, DC_RISK_PCT_MAX,
     STRATEGY_COOLDOWN,
 )
 from .analysis_utils import get_daily_ema, get_1h_ema, get_1h_atr
@@ -216,7 +217,11 @@ def on_new_1h_candle(symbol: str, candle: tuple) -> dict | None:
         log.warning(f"[DC] {symbol} 1H ATR 資料不足，略過此信號")
         return None
 
-    stop_loss = ema200_1h + atr_14_1h
+    stop_loss    = ema200_1h + atr_14_1h
+    risk_1r_pct  = abs(close - stop_loss) / close * 100
+    if not (DC_RISK_PCT_MIN <= risk_1r_pct <= DC_RISK_PCT_MAX):
+        log.debug(f"[DC] {symbol} 止損距離 {risk_1r_pct:.1f}% 不在 [{DC_RISK_PCT_MIN},{DC_RISK_PCT_MAX}]%，略過")
+        return None
 
     # 更新狀態
     st["entry_count"]   += 1

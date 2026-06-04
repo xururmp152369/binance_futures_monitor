@@ -80,6 +80,8 @@
 | `DC_REJECTION_BODY_PCT` | 0.005 | 信號 A 壓制幅度（收盤低於 EMA200 至少 0.5%） |
 | `DC_ENGULF_BODY_RATIO` | 1.5 | 信號 B 實體吞噬倍數 |
 | `DC_ENGULF_VOLUME_RATIO` | 1.5 | 信號 B 量能倍數 |
+| `DC_RISK_PCT_MIN` | 3.0 | 止損距離下限（%），過窄訊號勝率低 |
+| `DC_RISK_PCT_MAX` | 12.0 | 止損距離上限（%），過寬訊號 EV 差 |
 
 ---
 

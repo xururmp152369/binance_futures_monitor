@@ -65,3 +65,6 @@ DC_MAX_ENTRIES_PER_ALERT = 2       # 每 ALERT 窗口最大進場次數
 DC_REJECTION_BODY_PCT    = 0.005   # 信號 A：收盤低於 EMA200(1H) 至少 0.5%
 DC_ENGULF_BODY_RATIO     = 1.5     # 信號 B：當根實體需 > 前根實體 × 此值
 DC_ENGULF_VOLUME_RATIO   = 1.5     # 信號 B：量能需 > 前根 × 此值
+# ── 止損距離過濾 ────────────────────────────────────────────────────────────────
+DC_RISK_PCT_MIN          = 3.0     # 止損距離下限（%），過窄的訊號勝率低
+DC_RISK_PCT_MAX          = 12.0    # 止損距離上限（%），過寬的訊號 EV 差
