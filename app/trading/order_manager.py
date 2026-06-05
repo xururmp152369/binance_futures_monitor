@@ -207,7 +207,8 @@ async def _place_orders_for_user(
         fill_price  = None
         filled_qty  = qty
         for attempt in range(1, MAX_RETRIES + 1):
-            order_id = f"cc_{symbol}_{int(time.time() * 1000)}"
+            safe_sym = symbol.encode("ascii", errors="ignore").decode("ascii")
+            order_id = f"cc_{safe_sym}_{int(time.time() * 1000)}"
             try:
                 order = await client.futures_create_order(
                     symbol=symbol,

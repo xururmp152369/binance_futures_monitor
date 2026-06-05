@@ -44,7 +44,7 @@ LOOKBACK_VOLUME_MULT      = 2.5    # 止損回掃放量門檻倍數（非連續�
 PUMP_CANDLE_TAKER_BUY_MIN = 0.0    # Pump Candle 最低 Taker Buy Ratio（0.0 = 停用此過濾）
 # ── 技術面濾波（SMA 200） ─────────────────────────────────────────────────────
 TREND_FILTER_SMA_PERIOD   = 200    # 技術面濾波 SMA 週期（4h K 收盤）
-TREND_FILTER_ENABLED      = True   # 是否啟用技術面濾波（False 可臨時關閉）
+TREND_FILTER_ENABLED      = False   # 是否啟用技術面濾波（False 可臨時關閉）
 # ── 冷卻（三層機制） ──────────────────────────────────────────────────────────
 STRATEGY_COOLDOWN                = 14400  # 全局告警冷卻秒數（4h），三層冷卻第二層
 LIQUIDATION_BUFFER_CONFIRM_COUNT = 3      # 即時廢棄連續幾次掃描確認才執行（每次 10 秒）

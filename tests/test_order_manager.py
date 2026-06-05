@@ -453,3 +453,40 @@ def test_opposite_direction_does_not_count_as_add_on():
         ok, _ = run(_place_orders_for_user("test_account", cfg, _SYMBOL, _SIGNAL_LONG, use_prd=False))
 
     assert ok is True  # 多單上限未達（0/3），應允許開倉
+
+
+# ─── 中文 symbol → newClientOrderId ASCII 防護 ───────────────────────────────
+
+def test_chinese_symbol_order_id_is_ascii():
+    """中文幣種名稱 → newClientOrderId 應只含 ASCII，避免 -1022 簽名不符。
+
+    根本原因：python-binance 簽名時只 URL encode `symbol` 欄位，
+    其他欄位（含 newClientOrderId）維持原值；但 aiohttp POST body 會
+    URL encode 所有欄位，導致含中文的 newClientOrderId 在簽名與請求中
+    呈現不同形式，Binance 回傳 -1022。
+    """
+    chinese_symbol = "龙虾USDT"
+    captured_ids = []
+
+    async def record_order(**kwargs):
+        if "newClientOrderId" in kwargs:
+            captured_ids.append(kwargs["newClientOrderId"])
+        return {"avgPrice": "100.0", "orderId": 1}
+
+    client = _make_client(
+        futures_exchange_info=AsyncMock(return_value={
+            "symbols": [{"symbol": chinese_symbol, "quantityPrecision": 3, "pricePrecision": 2}]
+        }),
+        futures_create_order=AsyncMock(side_effect=record_order),
+    )
+
+    with patch("app.trading.order_manager.AsyncClient") as cls:
+        cls.create = AsyncMock(return_value=client)
+        run(_place_orders_for_user("test_account", _CFG, chinese_symbol, _SIGNAL_LONG, use_prd=False))
+
+    assert len(captured_ids) >= 1, "未捕捉到市價開倉的 newClientOrderId"
+    market_order_id = captured_ids[0]
+    assert market_order_id.isascii(), (
+        f"newClientOrderId 含非 ASCII 字元，會導致 -1022：{market_order_id!r}"
+    )
+    assert "龙虾" not in market_order_id
