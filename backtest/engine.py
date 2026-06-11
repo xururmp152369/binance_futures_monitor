@@ -16,6 +16,7 @@ from app.strategy.state_machine import (
     on_new_15m_candle,
     on_new_1h_candle,
     on_new_daily_candle,
+    on_new_fib_candle,
 )
 
 # ─── 時間補丁（讓冷卻邏輯使用 K 棒時間而非真實時間） ─────────────────────────────
@@ -61,6 +62,7 @@ def _init_symbol_state(symbol: str) -> None:
     }
     models.strategy_state.pop(symbol, None)
     models.death_cross_state.pop(symbol, None)
+    models.fibonacci_state.pop(symbol, None)
 
 
 # ─── 回測期間計算 ─────────────────────────────────────────────────────────────
@@ -152,7 +154,8 @@ def run_symbol_backtest(
 
         _patch_time(candle_close_ts)
         try:
-            signal = None
+            signal      = None
+            fib_signals = []
 
             if interval == "1d":
                 # 對齊 replay：只從最後 250 根開始呼叫
@@ -163,12 +166,15 @@ def run_symbol_backtest(
                 # 對齊 replay：只從最後 50 根開始呼叫
                 if candle[0] >= sm_start["4h"]:
                     on_new_4h_candle(symbol, candle)
+                fib_signals = on_new_fib_candle(symbol, candle, "4h")
 
             elif interval == "1h":
-                signal = on_new_1h_candle(symbol, candle)
+                signal      = on_new_1h_candle(symbol, candle)
+                fib_signals = on_new_fib_candle(symbol, candle, "1h")
 
             elif interval == "15m":
-                signal = on_new_15m_candle(symbol, candle)
+                signal      = on_new_15m_candle(symbol, candle)
+                fib_signals = on_new_fib_candle(symbol, candle, "15m")
 
         finally:
             _restore_time()
@@ -179,6 +185,8 @@ def run_symbol_backtest(
         )
         if signal and in_range:
             signals.append(signal)
+        if in_range:
+            signals.extend(fib_signals)
 
     return signals
 
@@ -219,5 +227,7 @@ def _strategy_to_types(strategies: set[str]) -> set[str]:
     mapping = {
         "long_breakout":     "type1",
         "death_cross_short": "type3",
+        "fibonacci_long":    "fibonacci_long",
+        "fibonacci_short":   "fibonacci_short",
     }
     return {mapping[s] for s in strategies if s in mapping}

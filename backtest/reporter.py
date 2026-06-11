@@ -7,13 +7,17 @@ RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
 TZ_TAIPEI   = timezone(timedelta(hours=8))
 
 _STRATEGY_NAME = {
-    "type1": "long_breakout",
-    "type3": "death_cross_short",
+    "type1":           "long_breakout",
+    "type3":           "death_cross_short",
+    "fibonacci_long":  "fibonacci_long",
+    "fibonacci_short": "fibonacci_short",
 }
 
 _DIRECTION = {
-    "type1": "LONG",
-    "type3": "SHORT",
+    "type1":           "LONG",
+    "type3":           "SHORT",
+    "fibonacci_long":  "LONG",
+    "fibonacci_short": "SHORT",
 }
 
 _BASE_FIELDS = [

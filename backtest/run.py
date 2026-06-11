@@ -3,6 +3,8 @@
 用法：
     python backtest/run.py --strategy long_breakout
     python backtest/run.py --strategy death_cross_short
+    python backtest/run.py --strategy fibonacci_long
+    python backtest/run.py --strategy fibonacci_short
     python backtest/run.py --strategy all
     python backtest/run.py --strategy long_breakout --days 30 --no-cache
     python backtest/run.py --strategy all --symbols BTCUSDT,ETHUSDT
@@ -44,11 +46,13 @@ from backtest.evaluator import evaluate_all, evaluate_all_with_account
 from backtest.reporter import write_all_reports, write_all_account_reports
 from app.strategy.long_breakout import print_diag_stats  # [DIAG]
 
-ALL_STRATEGIES = {"long_breakout", "death_cross_short"}
+ALL_STRATEGIES = {"long_breakout", "death_cross_short", "fibonacci_long", "fibonacci_short"}
 
 _TYPE_TO_STRATEGY = {
-    "type1": "long_breakout",
-    "type3": "death_cross_short",
+    "type1":           "long_breakout",
+    "type3":           "death_cross_short",
+    "fibonacci_long":  "fibonacci_long",
+    "fibonacci_short": "fibonacci_short",
 }
 
 

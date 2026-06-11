@@ -6,8 +6,10 @@ from ..extension.utils import setup_logging
 log = setup_logging()
 
 _SIGNAL_STRATEGY_KEY = {
-    "type1": "long_breakout",
-    "type3": "death_cross_short",
+    "type1":           "long_breakout",
+    "type3":           "death_cross_short",
+    "fibonacci_long":  "fibonacci_long",
+    "fibonacci_short": "fibonacci_short",
 }
 
 _REMINDER_TEXT = "⚠️ 請更新設定以便接收新訊號（輸入 /setup 查看範本）"
@@ -89,6 +91,42 @@ def format_type3_alert(symbol: str, signal: dict) -> str:
     )
 
 
+def format_fib_alert(symbol: str, signal: dict) -> str:
+    sym_display = symbol.replace("USDT", "USDT.P")
+    direction   = signal["direction"]
+    close       = signal["close"]
+    sl          = signal["stop_loss"]
+    tp1         = signal["take_profit_1"]
+    fib_1_73    = signal["fib_1_73"]
+    fib_range   = signal["fib_range"]
+    interval    = signal.get("interval", "?")
+    bar_a_str   = datetime.fromtimestamp(signal["bar_a_time"]).strftime("%Y/%m/%d %H:%M")
+    bar_9_str   = datetime.fromtimestamp(signal["bar_9_time"]).strftime("%Y/%m/%d %H:%M")
+
+    dir_label = "多單 📈" if direction == "LONG" else "空單 📉"
+    if direction == "LONG":
+        sl_pct  = (close - sl)  / close * 100
+        tp1_pct = (tp1 - close) / close * 100
+    else:
+        sl_pct  = (sl - close)  / close * 100
+        tp1_pct = (close - tp1) / close * 100
+
+    return (
+        f"🎯 *策略訊號 — Fibonacci 延伸*\n"
+        f"幣種：`{sym_display}` ｜ {dir_label} ｜ {_now_str()}\n"
+        f"\n"
+        f"📅 barA 起始：`{bar_a_str}`（{interval}）\n"
+        f"⏰ bar9 進場：`{bar_9_str}`（{interval}）\n"
+        f"\n"
+        f"💰 進場價：`{_fmt_price(close)}`\n"
+        f"📐 Fib Range：`{_fmt_price(fib_range)}` ｜ Fib 1.73：`{_fmt_price(fib_1_73)}`\n"
+        f"\n"
+        f"🔴 止損：`{_fmt_price(sl)}`（-{sl_pct:.2f}%）\n"
+        f"🟢 TP1（Fib 6.92）：`{_fmt_price(tp1)}`（+{tp1_pct:.2f}%）\n"
+        f"[📈 查看圖表](https://www.binance.com/zh-TC/futures/{symbol})"
+    )
+
+
 async def send_strategy_alert(symbol: str, signal: dict) -> bool:
     """發送策略訊號告警到 Telegram。
 
@@ -105,6 +143,8 @@ async def send_strategy_alert(symbol: str, signal: dict) -> bool:
             text = format_type1_alert(symbol, signal)
         elif sig_type == "type3":
             text = format_type3_alert(symbol, signal)
+        elif sig_type in ("fibonacci_long", "fibonacci_short"):
+            text = format_fib_alert(symbol, signal)
         else:
             return False
 

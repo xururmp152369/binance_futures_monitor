@@ -2,10 +2,11 @@
 
 ## 專案概覽
 
-自動化監控 Binance 永續合約，偵測兩種進場機會，透過 Telegram Bot 發訊號並支援自動下單。監控全 USDT 合約，運行於本機 Docker。
+自動化監控 Binance 永續合約，偵測三種進場機會，透過 Telegram Bot 發訊號並支援自動下單。監控全 USDT 合約，運行於本機 Docker。
 
 - **Type 1**（多頭）：4h 拉漲後盤整突破 → `long_breakout.py`
 - **Type 3**（空頭）：死亡叉制空（日線格局 + 1H EMA200 壓制）→ `death_cross_short.py`
+- **Fibonacci**（雙向）：底底高/頂頂低 + Fib 1.73 影線確認 → `long_short_fibonacci.py`
 
 ---
 
@@ -16,13 +17,14 @@
 | [docs/architecture/overview.md](docs/architecture/overview.md) | 系統全貌、資料流、模組職責、啟動流程 |
 | [docs/specs/long_breakout.md](docs/specs/long_breakout.md) | Type 1 完整行為規格 + 狀態機圖 |
 | [docs/specs/death_cross_short.md](docs/specs/death_cross_short.md) | Type 3 完整行為規格 + 狀態機圖 |
+| [docs/specs/long_short_fibonacci.md](docs/specs/long_short_fibonacci.md) | Fibonacci 策略完整行為規格 |
 | [docs/decisions/README.md](docs/decisions/README.md) | 設計決策索引（ADR） |
 
 ---
 
 ## 使用者設定欄位
 
-有效策略代號：`"long_breakout"`、`"death_cross_short"`
+有效策略代號：`"long_breakout"`、`"death_cross_short"`、`"fibonacci_long"`、`"fibonacci_short"`
 
 | 欄位 | 說明 |
 |------|------|
@@ -82,6 +84,15 @@
 | `DC_ENGULF_VOLUME_RATIO` | 1.5 | 信號 B 量能倍數 |
 | `DC_RISK_PCT_MIN` | 3.0 | 止損距離下限（%），過窄訊號勝率低 |
 | `DC_RISK_PCT_MAX` | 12.0 | 止損距離上限（%），過寬訊號 EV 差 |
+
+### Fibonacci 策略（fibonacci_long / fibonacci_short）
+
+| 參數 | 預設值 | 說明 |
+|------|--------|------|
+| `FIB_K_INTERVAL` | `"1h"` | K 線週期（`"15m"` / `"1h"` / `"4h"`） |
+| `FIB_EMA_PERIOD` | 55 | EMA 週期（barA/barB 收盤需在 EMA 同側） |
+| `FIB_CONFIRM_LEVEL` | 1.73 | bar5/bar8 影線確認 Fib 倍數 |
+| `FIB_TP1_LEVEL` | 6.92 | TP1 止盈 Fib 倍數 |
 
 ---
 

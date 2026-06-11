@@ -68,3 +68,9 @@ DC_ENGULF_VOLUME_RATIO   = 1.5     # 信號 B：量能需 > 前根 × 此值
 # ── 止損距離過濾 ────────────────────────────────────────────────────────────────
 DC_RISK_PCT_MIN          = 3.0     # 止損距離下限（%），過窄的訊號勝率低
 DC_RISK_PCT_MAX          = 12.0    # 止損距離上限（%），過寬的訊號 EV 差
+
+# ================== Fibonacci 策略參數（fibonacci_long / fibonacci_short）==================
+FIB_K_INTERVAL    = "4h"   # K 線週期（"15m" / "1h" / "4h"）
+FIB_EMA_PERIOD    = 100     # EMA 週期（barA/barB 收盤需在 EMA 同側）
+FIB_CONFIRM_LEVEL = 1.73   # bar5/bar8 影線確認層級（Fib 倍數）
+FIB_TP1_LEVEL     = 6.92   # TP1 止盈層級（Fib 倍數）

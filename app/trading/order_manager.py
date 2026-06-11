@@ -9,8 +9,10 @@ log = setup_logging()
 
 # 訊號類型 → 設定中的策略代號
 _SIGNAL_TO_STRATEGY = {
-    "type1": "long_breakout",
-    "type3": "death_cross_short",
+    "type1":           "long_breakout",
+    "type3":           "death_cross_short",
+    "fibonacci_long":  "fibonacci_long",
+    "fibonacci_short": "fibonacci_short",
 }
 
 
@@ -120,7 +122,7 @@ async def _place_orders_for_user(
         return None
 
     # 方向判斷
-    is_long       = raw_type == "type1"
+    is_long       = raw_type in ("type1", "fibonacci_long")
     entry_side    = "BUY"  if is_long else "SELL"
     exit_side     = "SELL" if is_long else "BUY"
     direction_str = "多頭" if is_long else "空頭"

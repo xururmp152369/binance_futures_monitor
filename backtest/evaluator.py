@@ -17,7 +17,7 @@ def evaluate_trade(
     """
     entry   = signal["close"]
     stop    = signal["stop_loss"]
-    is_long = signal.get("type") == "type1"
+    is_long = signal.get("type") in ("type1", "fibonacci_long")
     risk_1r = abs(entry - stop)
 
     if risk_1r == 0:
@@ -123,7 +123,7 @@ def evaluate_trade_with_account(
     """
     entry   = signal["close"]
     stop    = signal["stop_loss"]
-    is_long = signal.get("type") == "type1"
+    is_long = signal.get("type") in ("type1", "fibonacci_long")
     risk_1r = abs(entry - stop)
 
     empty = {"win": False, "pnl_usdt": 0.0, "stop_hit": False, "eval_incomplete": False}

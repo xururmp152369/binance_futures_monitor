@@ -10,6 +10,7 @@ from ..strategy.state_machine import (
     on_new_15m_candle,
     on_new_1h_candle,
     on_new_daily_candle,
+    on_new_fib_candle,
     replay_historical_4h_candles,
     replay_historical_daily_candles_dc,
 )
@@ -236,16 +237,17 @@ def _handle_kline_15m(data: dict) -> tuple | None:
     return sym, candle
 
 
-def _handle_kline_4h(data: dict) -> None:
-    """收盤 4h K 棒：存 OHLC、驅動策略狀態機。"""
+def _handle_kline_4h(data: dict) -> tuple | None:
+    """收盤 4h K 棒：存 OHLC、驅動策略狀態機。回傳 (sym, candle) 或 None。"""
     k   = data["k"]
     sym = k["s"]
     if sym not in symbol_state or not k["x"]:
-        return
+        return None
     state  = symbol_state[sym]
     candle = (int(k["t"]), float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]), float(k["q"]), float(k.get("Q", 0)))
     state["kline_4h_ohlc"].append(candle)
     on_new_4h_candle(sym, candle)
+    return sym, candle
 
 
 def _handle_kline_1h(data: dict) -> tuple | None:
@@ -333,6 +335,8 @@ async def handle_price_websocket(client, batch_symbols):
                                 signal = on_new_15m_candle(sym, candle)
                                 if signal:
                                     asyncio.create_task(_fire_signal(sym, signal))
+                                for fib_sig in on_new_fib_candle(sym, candle, "15m"):
+                                    asyncio.create_task(_fire_signal(sym, fib_sig))
 
                         elif stream_name.endswith("@kline_1h"):
                             last_symbol, last_interval = data["k"]["s"], "1h"
@@ -342,10 +346,16 @@ async def handle_price_websocket(client, batch_symbols):
                                 signal = on_new_1h_candle(sym, candle)
                                 if signal:
                                     asyncio.create_task(_fire_signal(sym, signal))
+                                for fib_sig in on_new_fib_candle(sym, candle, "1h"):
+                                    asyncio.create_task(_fire_signal(sym, fib_sig))
 
                         elif stream_name.endswith("@kline_4h"):
                             last_symbol, last_interval = data["k"]["s"], "4h"
-                            _handle_kline_4h(data)
+                            result = _handle_kline_4h(data)
+                            if result:
+                                sym, candle = result
+                                for fib_sig in on_new_fib_candle(sym, candle, "4h"):
+                                    asyncio.create_task(_fire_signal(sym, fib_sig))
 
                         elif stream_name.endswith("@kline_1d"):
                             last_symbol, last_interval = data["k"]["s"], "1d"
