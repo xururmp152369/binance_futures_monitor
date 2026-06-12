@@ -176,6 +176,7 @@ async def initialize_symbols(client):
                     "last_price": None,
                     "funding_rate": 0.0,
                     "last_kline_close_time_15m":    0,
+                    "last_kline_close_time_4h":     0,
                     "last_kline_close_time_1h":     0,
                     "last_kline_close_time_daily":  0,
                     "kline_4h_ohlc":     deque(maxlen=200),
@@ -238,12 +239,16 @@ def _handle_kline_15m(data: dict) -> tuple | None:
 
 
 def _handle_kline_4h(data: dict) -> tuple | None:
-    """收盤 4h K 棒：存 OHLC、驅動策略狀態機。回傳 (sym, candle) 或 None。"""
+    """收盤 4h K 棒：去重、存 OHLC、驅動策略狀態機。回傳 (sym, candle) 或 None。"""
     k   = data["k"]
     sym = k["s"]
     if sym not in symbol_state or not k["x"]:
         return None
-    state  = symbol_state[sym]
+    state      = symbol_state[sym]
+    close_time = k["T"] // 1000
+    if close_time <= state["last_kline_close_time_4h"]:
+        return None
+    state["last_kline_close_time_4h"] = close_time
     candle = (int(k["t"]), float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"]), float(k["q"]), float(k.get("Q", 0)))
     state["kline_4h_ohlc"].append(candle)
     on_new_4h_candle(sym, candle)
