@@ -93,6 +93,7 @@
 | `FIB_EMA_PERIOD` | 55 | EMA 週期（barA/barB 收盤需在 EMA 同側） |
 | `FIB_CONFIRM_LEVEL` | 1.73 | bar5/bar8 影線確認 Fib 倍數 |
 | `FIB_TP1_LEVEL` | 6.92 | TP1 止盈 Fib 倍數 |
+| `FIB_MAX_SL_PCT` | 5.0 | 止損距離上限（%），超過不發訊號 |
 
 ---
 

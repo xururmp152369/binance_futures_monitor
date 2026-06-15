@@ -288,8 +288,12 @@ Fib 層級計算：
   4. 方向正確：
      多單 → 當前市價 > SL
      空單 → 當前市價 < SL
-  5. 該 bar9 時間戳未重複觸發（防止同一 bar9 重複發訊號）
-  6. 保證金充足（由用戶自行設置的開倉邏輯決定）
+  5. 止損距離不超過 FIB_MAX_SL_PCT（預設 5%）：
+     多單 → (market_price - SL) / market_price * 100 < 5%
+     空單 → (SL - market_price) / market_price * 100 < 5%
+     （超過 5% 的形態風險過大，不發訊號）
+  6. 該 bar9 時間戳未重複觸發（防止同一 bar9 重複發訊號）
+  7. 保證金充足（由用戶自行設置的開倉邏輯決定）
 ```
 
 ### **開單後重置（防止連續開單）**
@@ -433,6 +437,7 @@ python backtest/run.py --strategy fibonacci_long --account 帳號名稱
 | **FIB_EMA_PERIOD** | 55 | 指數移動平均線週期 | K 棒數 |
 | **FIB_CONFIRM_LEVEL** | 1.73 | 確認層級（bar5、bar8 影線） | Fib 倍數 |
 | **FIB_TP1_LEVEL** | 6.92 | TP1 止盈層級 | Fib 倍數 |
+| **FIB_MAX_SL_PCT** | 5.0 | 止損距離上限，超過此值不發訊號 | % |
 
 ### 策略代號（用於 PRD_STRATEGY / DEV_STRATEGY）
 
@@ -485,6 +490,7 @@ python backtest/run.py --strategy fibonacci_long --account 帳號名稱
   - [ ] 未停損（SL 未被碰）
   - [ ] 未到 TP1（Fib_6.92 未被碰）
   - [ ] 方向正確（多：市價 > SL；空：市價 < SL）
+  - [ ] 止損距離 < FIB_MAX_SL_PCT（預設 5%），超過不發訊號
   - [ ] 同一 bar9 時間戳不重複觸發
 
 - [ ] **開單後重置**

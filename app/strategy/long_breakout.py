@@ -228,6 +228,51 @@ def _maybe_transition_to_ready(st: dict, current_ts: float, symbol: str) -> None
         )
 
 
+def _maybe_apply_method_c(
+    st: dict, symbol: str,
+    open_: float, close: float, high: float, low: float,
+    current_ts: float, gain_pct: float, vol_ratio: float,
+    quote_volume: float, taker_buy_ratio: float,
+    direction: Direction,
+) -> None:
+    """Method C（ADR-006）：TRACKING 階段，從原基準K棒頂/底延伸超過 METHOD_B_RELAXED_THRESHOLD
+    後，允許更換基準K棒。體量比較基準為當下 pump_candle_volume，不是任何延伸K棒。
+    """
+    if direction == Direction.LONG:
+        pump_ref    = st.get("pump_candle_high") or 0
+        current_ext = st.get("consolidation_high") or 0
+        gate_pct    = (current_ext - pump_ref) / pump_ref * 100 if pump_ref > 0 else 0
+    else:
+        pump_ref    = st.get("pump_candle_low") or 0
+        current_ext = st.get("consolidation_low") or float("inf")
+        gate_pct    = (pump_ref - current_ext) / pump_ref * 100 if pump_ref > 0 else 0
+
+    if gate_pct <= METHOD_B_RELAXED_THRESHOLD:
+        log.debug(
+            f"[策略-L] {symbol} Method C gate 未開啟 "
+            f"{gate_pct:.1f}% ≤ {METHOD_B_RELAXED_THRESHOLD}%"
+        )
+        return
+
+    prev_volume = st.get("pump_candle_volume") or 0
+    if prev_volume > 0 and quote_volume < prev_volume * METHOD_B_VOLUME_RATIO:
+        log.debug(
+            f"[策略-L] {symbol} Method C 體量不足 "
+            f"{quote_volume:.0f} < {prev_volume * METHOD_B_VOLUME_RATIO:.0f}"
+        )
+        return
+
+    _apply_trigger(
+        st, symbol, open_, close, high, low,
+        current_ts, gain_pct, vol_ratio, quote_volume, taker_buy_ratio,
+        direction, is_method_b=True,
+    )
+    log.info(
+        f"[策略-L] {symbol} Method C 觸發 "
+        f"漲幅={gain_pct:.1f}% gate={gate_pct:.1f}% → 更換基準K棒"
+    )
+
+
 # ─── 4h 狀態機 ───────────────────────────────────────────────────────────────
 
 def on_new_4h_candle_long(
@@ -263,6 +308,15 @@ def on_new_4h_candle_long(
             st["phase"] = StrategyPhase.TRACKING
             note = "（原 READY 回退）" if prev_phase == StrategyPhase.READY else ""
             log.info(f"[策略-L] {symbol} 延伸 {ext_price:.6f}{note} → 計時重置")
+            # Method C：延伸根若同時是有效拉漲K且 gate 已開啟，更換基準K棒
+            is_c_trigger, c_gain, c_vol_ratio = _check_trigger(
+                symbol, open_, close, quote_volume, direction
+            )
+            if is_c_trigger:
+                _maybe_apply_method_c(
+                    st, symbol, open_, close, high, low,
+                    current_ts, c_gain, c_vol_ratio, quote_volume, taker_buy_ratio, direction,
+                )
             _maybe_transition_to_ready(st, current_ts, symbol)
             return None
 
@@ -272,6 +326,12 @@ def on_new_4h_candle_long(
     if is_trigger:
         if st["phase"] == StrategyPhase.IDLE:
             _apply_trigger(
+                st, symbol, open_, close, high, low,
+                current_ts, gain_pct, vol_ratio, quote_volume, taker_buy_ratio, direction,
+            )
+        elif st["phase"] == StrategyPhase.TRACKING:
+            # Method C：非創新高的拉漲K，若 gate 已開啟則更換基準K棒
+            _maybe_apply_method_c(
                 st, symbol, open_, close, high, low,
                 current_ts, gain_pct, vol_ratio, quote_volume, taker_buy_ratio, direction,
             )

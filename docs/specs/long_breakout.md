@@ -19,6 +19,7 @@
 | Pump 驗證 | 無 | Taker Buy Ratio | 防止對敲虛假單 |
 | 技術面濾波 | 無 | MA 均線確認 | 避免逆勢進場 |
 | 冷卻期 | 全局 4h | 三層檢查機制 | 增加機會同時防重複 |
+| <span style="color: red;">**Method C（新增）**</span> | 無 | <span style="color: red;">追蹤階段延伸超過門檻後允許更換基準K棒</span> | 防止基準K棒資料過時 |
 
 ---
 
@@ -96,6 +97,7 @@ stateDiagram-v2
     TRACKING --> IDLE : 廢棄\n（4h 實體收破底部）
     TRACKING --> IDLE : 即時廢棄\n（markPrice < 底部，需確認）
     TRACKING --> TRACKING : 延伸\n（4h 創新高 → 重置計時）
+    TRACKING --> TRACKING : Method C 觸發\n（延伸 > 10% 且新強拉漲K → 更換基準K棒）
     TRACKING --> READY : 盤整 ≥ 12h
 
     READY --> IDLE : 廢棄\n（4h 實體收破底部）
@@ -264,7 +266,7 @@ def check_instant_liquidation():
 
 ## <span style="color: red;">**Method B：READY 狀態下的強觸發重置（V2 優化）**</span>
 
-**適用狀態**：僅 `READY`（`TRACKING` 中出現觸發 K 不處理 Method B）
+**適用狀態**：僅 `READY`（`TRACKING` 中出現觸發 K 由 Method C 處理，見下節）
 
 當 READY 狀態下出現符合觸發條件的 4h 陽線帶量 K，依照前觸發 K 漲幅分兩種處理：
 
@@ -314,6 +316,56 @@ prev_gain > METHOD_B_RELAXED_THRESHOLD
 ```
 
 > **差異**：Case 1 完整重置頂部；Case 2 保留舊頂部若比新觸發 K 高（避免退縮突破目標）。
+
+---
+
+## <span style="color: red;">**Method C：TRACKING 階段延伸超過門檻後的基準K棒更換（新增）**</span>
+
+<span style="color: red;">
+
+**適用狀態**：`TRACKING`（僅限追蹤階段，READY 不適用）
+
+**設計背景（ADR-006）**：追蹤階段若持續創新高，原基準K棒的 Taker Buy Ratio 等資料會逐漸失去代表性。Method C 在延伸幅度已足夠大時，允許以更新更具代表性的拉漲K棒取代原基準K棒。
+
+### Gate 條件（開啟評估）
+
+從原基準K棒的高點（多單）或低點（空單）到目前已達到的極值，漲跌幅超過 `METHOD_B_RELAXED_THRESHOLD`（預設 10%）：
+
+```
+多單：(目前已達最高點 - 原基準K棒高點) / 原基準K棒高點 × 100 > 10%
+空單：(原基準K棒低點 - 目前已達最低點) / 原基準K棒低點 × 100 > 10%
+```
+
+Gate 動態計算，不需要新的 state 欄位。
+
+### 新K棒資格條件
+
+1. 本身是有效拉漲K棒（漲幅 ≥ 動態門檻，量能 ≥ 3× 均量）
+2. 成交量 ≥ **當下 `pump_candle_volume`** × `METHOD_B_VOLUME_RATIO`（0.8）
+   - ⚠️ 比較基準是「當下記錄的基準K棒成交量」，不是任何中間延伸K棒
+
+不需要漲幅優勢比較（不需要 1.1 倍）。
+
+### 觸發後更新內容
+
+```
+觸發後（is_method_b=True）：
+  consolidation_low  = 新K棒的 low（往有利方向移動）
+  consolidation_high = max(原頂部, 新K棒 high)（只進不退）
+  pump_candle_*      = 全部換成新K棒（含 Taker Buy Ratio）
+  consolidation_start_ts = 新K棒時間（盤整計時重置）
+```
+
+### 兩種觸發路徑
+
+| 路徑 | 情境 | 處理流程 |
+|------|------|---------|
+| 創新高的拉漲K棒 | 延伸邏輯先更新頂部，再評估 Method C | 延伸 → Method C 判斷 → return |
+| 未創新高的拉漲K棒 | 直接進 TRACKING handler | trigger check → Method C 判斷 |
+
+兩個路徑都以 `is_method_b=True` 呼叫 `_apply_trigger`，確保頂部不退縮。
+
+</span>
 
 ---
 
@@ -579,7 +631,7 @@ def mark_signal_sent(consolidation_id, current_15m_time):
 | 情境 | 行為 |
 |------|------|
 | 觸發 K 同一根同時滿足廢棄（low < consolidation_low） | 先廢棄判斷、再觸發判斷，廢棄優先 |
-| TRACKING 中出現更強的觸發 K | <span style="color: red;">**V2：檢查體量驗證（volume ≥ 前 K × 0.8）**</span>，符合才執行 Method B |
+| TRACKING 中出現更強的觸發 K | <span style="color: red;">**Method C**：先確認 Gate（原基準K棒延伸 > 10%），再做體量驗證（volume ≥ 前 K × 0.8），符合才更換基準K棒 |
 | 15m 進場但無 `kline_15m_ohlc` 或不足 193 根 | 跳過，不發訊號 |
 | 即時廢棄發生後 4h 又收盤廢棄 | <span style="color: red;">**V2：即時廢棄已確認 3 次**</span>，重置為 IDLE，4h 廢棄對 IDLE 狀態無作用 |
 | Method B 後，`consolidation_start_ts` 重置 | 新觸發 K 的 `open_time` 作為計時起點，從頭累積 12h |
@@ -593,7 +645,7 @@ def mark_signal_sent(consolidation_id, current_15m_time):
 
 - **下影線**不觸發廢棄，只有實體 `min(open, close)` 才算
 - **即時廢棄**（markPrice）與 **4h 收盤廢棄**行為相同，都只是重置多頭狀態
-- **TRACKING 狀態**下不處理 Method B
+- **TRACKING 狀態**下出現觸發 K 由 Method C 處理（需先滿足 Gate 條件），不套用 Method B
 - **止損回掃**限定在當前 4h K 開盤時間之後，不跨 4h 邊界
 - <span style="color: red;">**V2 新增**：Taker Buy Ratio 檢查是**事前驗證**，不影響已發訊號的處理</span>
 - <span style="color: red;">**V2 新增**：技術面濾波（SMA 200）是**建議性濾波**，可配置開關</span>
@@ -626,7 +678,7 @@ def mark_signal_sent(consolidation_id, current_15m_time):
 | `TRIGGER_VOLUME_BASELINE_N` | 12 | 量能基準根數（前 N 根 4h） |
 | `CONSOLIDATION_MIN_HOURS` | 12 | 最低盤整時數 |
 | `METHOD_B_GAIN_ADVANTAGE` | 10.0 | Method B 漲幅優勢門檻（%） |
-| `METHOD_B_RELAXED_THRESHOLD` | 10.0 | 寬鬆重置啟動的前觸發 K 漲幅門檻（%） |
+| `METHOD_B_RELAXED_THRESHOLD` | 10.0 | Method B 寬鬆重置門檻（%）；同時作為 Method C 的 Gate 條件（延伸超過此值才允許更換基準K棒） |
 | `BREAKOUT_VOLUME_MULT` | 3.5 | Type 1 突破量能倍數（`>=`） |
 | `BREAKOUT_BODY_PCT` | 0.005 | Type 1 突破實體幅度（0.5%） |
 | `LOOKBACK_VOLUME_MULT` | 2.5 | 止損回掃放量門檻倍數 |

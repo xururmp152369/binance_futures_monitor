@@ -10,7 +10,7 @@
 """
 import time
 from ..setting import models
-from ..setting.config import FIB_K_INTERVAL, FIB_EMA_PERIOD, FIB_CONFIRM_LEVEL, FIB_TP1_LEVEL
+from ..setting.config import FIB_K_INTERVAL, FIB_EMA_PERIOD, FIB_CONFIRM_LEVEL, FIB_TP1_LEVEL, FIB_MAX_SL_PCT
 from .analysis_utils import calc_ema
 from ..extension.utils import setup_logging
 
@@ -184,6 +184,14 @@ def _scan_fib_pattern(klines: list, direction: str) -> dict | None:
     if direction == "LONG" and current_price <= sl:
         return None
     if direction == "SHORT" and current_price >= sl:
+        return None
+
+    # 開單條件 5：止損距離不超過 FIB_MAX_SL_PCT
+    if direction == "LONG":
+        sl_pct = (current_price - sl) / current_price * 100
+    else:
+        sl_pct = (sl - current_price) / current_price * 100
+    if sl_pct >= FIB_MAX_SL_PCT:
         return None
 
     return {
