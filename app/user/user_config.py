@@ -402,8 +402,8 @@ def validate_config(data: dict) -> tuple[bool, list[str]]:
         tp = data.get(field)
         if tp is None:
             return  # 選填欄位，不填則 fallback 到 TP_STRATEGY
-        if not isinstance(tp, list) or not (1 <= len(tp) <= 3):
-            errors.append(f"`{field}` 必須包含 1 ~ 3 組止盈設定")
+        if not isinstance(tp, list) or len(tp) < 1:
+            errors.append(f"`{field}` 必須包含至少 1 組止盈設定")
             return
         total_pct = 0
         for i, entry in enumerate(tp, 1):
@@ -419,8 +419,8 @@ def validate_config(data: dict) -> tuple[bool, list[str]]:
             errors.append(f"`{field}` PERCENT 總和不可超過 100（目前：{total_pct}）")
 
     tp = data.get("LONG_TP_STRATEGY")
-    if not isinstance(tp, list) or not (1 <= len(tp) <= 3):
-        errors.append("`LONG_TP_STRATEGY` 必須包含 1 ~ 3 組止盈設定")
+    if not isinstance(tp, list) or len(tp) < 1:
+        errors.append("`LONG_TP_STRATEGY` 必須包含至少 1 組止盈設定")
     else:
         _validate_tp("LONG_TP_STRATEGY")
 

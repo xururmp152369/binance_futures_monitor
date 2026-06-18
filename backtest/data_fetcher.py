@@ -225,6 +225,7 @@ async def fetch_usdt_symbols() -> list[str]:
         if s["quoteAsset"] == "USDT"
         and s["contractType"] == "PERPETUAL"
         and s["status"] == "TRADING"
+        and s.get("underlyingType") == "COIN"
     ]
     return sorted(symbols)
 

@@ -159,12 +159,20 @@ async def initialize_symbols(client):
     """
     try:
         ticker24 = await client.futures_ticker()
+        exchange_info = await client.futures_exchange_info()
+        # 只保留 underlyingType == "COIN" 的合約，排除美股等非加密貨幣合約
+        coin_symbols = {
+            s["symbol"]
+            for s in exchange_info["symbols"]
+            if s.get("underlyingType") == "COIN"
+        }
         valid = set()
         for t in ticker24:
             s = t["symbol"]
-            if (s.endswith("USDT") 
-                and float(t["quoteVolume"]) >= QUOTE_VOLUME # 24h 成交量
-                and not any(s.endswith(ex) for ex in EXCLUDE_SYMBOLS)):
+            if (s.endswith("USDT")
+                and float(t["quoteVolume"]) >= QUOTE_VOLUME
+                and not any(s.endswith(ex) for ex in EXCLUDE_SYMBOLS)
+                and s in coin_symbols):
                 valid.add(s)
 
         new_symbols = []
