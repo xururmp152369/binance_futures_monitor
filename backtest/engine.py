@@ -193,6 +193,40 @@ def run_symbol_backtest(
 
 # ─── 多幣種批次回測 ──────────────────────────────────────────────────────────
 
+def _filter_batch_signals(signals: list[dict]) -> list[dict]:
+    """移除批次觸發視窗的所有 type1 訊號（整批過濾）。
+
+    同時檢查兩個來源：
+    1. 後處理計數：輸出訊號中同一視窗 ≥ BATCH_SIGNAL_LIMIT 筆（正常批次）
+    2. _BATCH_EXCEEDED：in-process 已擋掉 Nth 訊號的視窗，先通過的前 N-1 筆也一併清零
+    """
+    from collections import Counter
+    from app.setting.config import BATCH_SIGNAL_LIMIT
+    from app.strategy.long_breakout import _BATCH_EXCEEDED
+
+    window_counts = Counter(
+        s["candle_open_time_ms"]
+        for s in signals
+        if s.get("type") == "type1"
+    )
+    blocked = {ts for ts, cnt in window_counts.items() if cnt >= BATCH_SIGNAL_LIMIT}
+    blocked |= _BATCH_EXCEEDED  # 補上被 in-process 擋掉而未計入的視窗
+
+    if not blocked:
+        return signals
+
+    filtered = [
+        s for s in signals
+        if not (s.get("type") == "type1" and s.get("candle_open_time_ms") in blocked)
+    ]
+    removed = len(signals) - len(filtered)
+    print(
+        f"[engine] 集體觸發過濾：移除 {removed} 筆批次訊號"
+        f"（{len(blocked)} 個視窗，每窗 ≥ {BATCH_SIGNAL_LIMIT} 筆）"
+    )
+    return filtered
+
+
 def run_backtest(
     all_data: dict[str, dict[str, list]],
     strategies: set[str],
@@ -201,6 +235,9 @@ def run_backtest(
     backtest_end_ms: int | None = None,
 ) -> list[dict]:
     """對所有幣種執行回測，回傳過濾後的訊號 list。"""
+    from app.strategy.long_breakout import _BATCH_EXCEEDED
+    _BATCH_EXCEEDED.clear()  # 每次回測重新累積批次超限記錄
+
     type_filter = _strategy_to_types(strategies)
     all_signals: list[dict] = []
     total = len(all_data)
@@ -219,6 +256,9 @@ def run_backtest(
 
         if i % 50 == 0 or i == total:
             print(f"[engine] {i}/{total} 個幣種完成")
+
+    # 集體觸發過濾：同一 15m 視窗 ≥ BATCH_SIGNAL_LIMIT 筆 type1 訊號整批移除
+    all_signals = _filter_batch_signals(all_signals)
 
     return all_signals
 

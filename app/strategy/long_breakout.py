@@ -5,12 +5,12 @@ from ..setting.config import (
     CONSOLIDATION_MIN_HOURS,
     PUMP_THRESHOLD_BULL, PUMP_THRESHOLD_NORMAL, PUMP_THRESHOLD_BEAR,
     BTC_BULL_THRESHOLD, BTC_BEAR_THRESHOLD,
-    TRIGGER_VOLUME_MULT,
-    METHOD_B_GAIN_ADVANTAGE, METHOD_B_RELAXED_THRESHOLD, METHOD_B_VOLUME_RATIO,
+    TRIGGER_VOLUME_MULT, PUMP_BODY_RATIO,
+    METHOD_B_RELAXED_THRESHOLD, METHOD_B_VOLUME_RATIO,
     BREAKOUT_VOLUME_MULT, BREAKOUT_BODY_PCT,
     BREAKOUT_BODY_RATIO, BREAKOUT_ATR_PERIOD, BREAKOUT_ATR_RATIO,
-    PUMP_CANDLE_TAKER_BUY_MIN,
-    TREND_FILTER_SMA_PERIOD, TREND_FILTER_ENABLED,
+    BREAKOUT_RISK_PCT_MIN, BREAKOUT_RISK_PCT_MAX,
+    BATCH_SIGNAL_LIMIT,
     STRATEGY_COOLDOWN,
     LOOKBACK_VOLUME_MULT,
     LIQUIDATION_BUFFER_CONFIRM_COUNT,
@@ -27,18 +27,36 @@ from ..extension.utils import setup_logging
 
 log = setup_logging()
 
+# ─── 集體觸發視窗追蹤（live 系統用；backtest 由 engine 後處理）────────────────────
+_WINDOW_BATCH: dict[int, list[str]] = {}
+_BATCH_EXCEEDED: set[int] = set()  # 曾觸發批次上限的視窗（供回測後處理整批清零用）
+
+
+def _batch_register(open_time_ms: int, symbol: str) -> int:
+    """將 symbol 登記到對應的 15m 視窗，回傳該視窗目前累積訊號數。過期視窗自動清除。"""
+    cutoff = open_time_ms - 30 * 60 * 1000
+    for stale in [k for k in _WINDOW_BATCH if k < cutoff]:
+        del _WINDOW_BATCH[stale]
+    bucket = _WINDOW_BATCH.setdefault(open_time_ms, [])
+    if symbol not in bucket:
+        bucket.append(symbol)
+    count = len(bucket)
+    if count >= BATCH_SIGNAL_LIMIT:
+        _BATCH_EXCEEDED.add(open_time_ms)
+    return count
+
 
 # ─── [DIAG] 診斷計數器（暫時加入，用完後移除，見 docs/debug/diag_filter_counters.md） ──
 _DIAG: dict[str, int] = {
-    "ready_candles":    0,   # READY 狀態下收到的 15m K 棒總數
-    "price_breakout":   0,   # 通過實體突破頂部 0.5%
-    "volume_ok":        0,   # 通過量能 3.5× 檢查
-    "sma_passed":       0,   # 通過 SMA 200 技術面濾波
-    "body_passed":      0,   # 通過實體強度 60% 檢查
-    "atr_passed":       0,   # 通過 ATR 突破力度 30% 檢查
-    "taker_passed":     0,   # 通過 Pump Candle Taker Buy Ratio 65% 檢查
-    "cooldown_passed":  0,   # 通過三層冷卻期檢查
-    "signal_fired":     0,   # 最終成功發出訊號
+    "ready_candles":     0,   # READY 狀態下收到的 15m K 棒總數
+    "price_breakout":    0,   # 通過實體突破頂部 0.5%
+    "volume_ok":         0,   # 通過量能 3.5× 檢查
+    "body_passed":       0,   # 通過實體強度 75% 檢查
+    "atr_passed":        0,   # 通過 ATR 突破力度 30% 檢查
+    "cooldown_passed":   0,   # 通過三層冷卻期檢查
+    "risk_range_passed": 0,   # 通過止損距離 3-5% 過濾
+    "batch_passed":      0,   # 通過集體觸發過濾
+    "signal_fired":      0,   # 最終成功發出訊號
 }
 
 
@@ -55,15 +73,15 @@ def print_diag_stats() -> None:
     s = dict(_DIAG)
     print("\n===== [DIAG] Type 1 進場過濾漏斗 =====")
     labels = [
-        ("ready_candles",   "READY 狀態 15m K"),
-        ("price_breakout",  "✓ 實體突破頂部 0.5%"),
-        ("volume_ok",       "✓ 量能 ≥ 3.5×"),
-        ("sma_passed",      "✓ SMA 200 技術面濾波"),
-        ("body_passed",     "✓ 實體強度 ≥ 60%"),
-        ("atr_passed",      "✓ ATR 突破力度 ≥ 30%"),
-        ("taker_passed",    "✓ Taker Buy Ratio ≥ 65%"),
-        ("cooldown_passed", "✓ 三層冷卻通過"),
-        ("signal_fired",    "★ 最終發出訊號"),
+        ("ready_candles",     "READY 狀態 15m K"),
+        ("price_breakout",    "✓ 實體突破頂部 0.5%"),
+        ("volume_ok",         "✓ 量能 ≥ 3.5×"),
+        ("body_passed",       "✓ 實體強度 ≥ 75%"),
+        ("atr_passed",        "✓ ATR 突破力度 ≥ 30%"),
+        ("cooldown_passed",   "✓ 三層冷卻通過"),
+        ("risk_range_passed", "✓ 止損距離 3-5%"),
+        ("batch_passed",      "✓ 集體觸發過濾"),
+        ("signal_fired",      "★ 最終發出訊號"),
     ]
     prev = None
     for key, label in labels:
@@ -149,14 +167,17 @@ def _get_dynamic_pump_threshold() -> float:
 # ─── 觸發判斷 ─────────────────────────────────────────────────────────────────
 
 def _check_trigger(
-    symbol: str, open_: float, close: float, quote_volume: float,
-    direction: Direction,
+    symbol: str, open_: float, close: float, high: float, low: float,
+    quote_volume: float, direction: Direction,
 ) -> tuple[bool, float, float]:
     if not is_directional_candle(open_, close, direction):
         return False, 0.0, 0.0
     gain_pct  = candle_gain_pct(open_, close, direction)
     threshold = _get_dynamic_pump_threshold()
     if gain_pct < threshold:
+        return False, gain_pct, 0.0
+    candle_range = high - low
+    if candle_range > 0 and abs(close - open_) / candle_range < PUMP_BODY_RATIO:
         return False, gain_pct, 0.0
     avg = get_4h_volume_baseline(symbol)
     if avg is None or avg <= 0:
@@ -310,7 +331,7 @@ def on_new_4h_candle_long(
             log.info(f"[策略-L] {symbol} 延伸 {ext_price:.6f}{note} → 計時重置")
             # Method C：延伸根若同時是有效拉漲K且 gate 已開啟，更換基準K棒
             is_c_trigger, c_gain, c_vol_ratio = _check_trigger(
-                symbol, open_, close, quote_volume, direction
+                symbol, open_, close, high, low, quote_volume, direction
             )
             if is_c_trigger:
                 _maybe_apply_method_c(
@@ -320,8 +341,10 @@ def on_new_4h_candle_long(
             _maybe_transition_to_ready(st, current_ts, symbol)
             return None
 
-    # 觸發判斷（IDLE 首次觸發 / READY 的 Method B）
-    is_trigger, gain_pct, vol_ratio = _check_trigger(symbol, open_, close, quote_volume, direction)
+    # 觸發判斷（IDLE 首次觸發 / TRACKING Method B / READY Method B）
+    is_trigger, gain_pct, vol_ratio = _check_trigger(
+        symbol, open_, close, high, low, quote_volume, direction
+    )
 
     if is_trigger:
         if st["phase"] == StrategyPhase.IDLE:
@@ -329,15 +352,9 @@ def on_new_4h_candle_long(
                 st, symbol, open_, close, high, low,
                 current_ts, gain_pct, vol_ratio, quote_volume, taker_buy_ratio, direction,
             )
-        elif st["phase"] == StrategyPhase.TRACKING:
-            # Method C：非創新高的拉漲K，若 gate 已開啟則更換基準K棒
-            _maybe_apply_method_c(
-                st, symbol, open_, close, high, low,
-                current_ts, gain_pct, vol_ratio, quote_volume, taker_buy_ratio, direction,
-            )
-        elif st["phase"] == StrategyPhase.READY:
+        elif st["phase"] in (StrategyPhase.TRACKING, StrategyPhase.READY):
+            # Method B：非創新高的帶量拉漲K，符合條件時更換基準K棒（適用 TRACKING/READY）
             prev_volume = st.get("pump_candle_volume") or 0
-            # Method B 前置體量驗證：新 K volume 需 ≥ 前觸發 K volume × METHOD_B_VOLUME_RATIO
             if prev_volume > 0 and quote_volume < prev_volume * METHOD_B_VOLUME_RATIO:
                 log.debug(
                     f"[策略-L] {symbol} Method B 體量不足 "
@@ -345,13 +362,15 @@ def on_new_4h_candle_long(
                 )
             else:
                 prev_gain = _pump_gain_pct(st, direction)
-                if prev_gain > METHOD_B_RELAXED_THRESHOLD:
+                if prev_gain >= METHOD_B_RELAXED_THRESHOLD:
+                    # 原觸發K漲幅夠大，直接完整重置
                     _apply_trigger(
                         st, symbol, open_, close, high, low,
                         current_ts, gain_pct, vol_ratio, quote_volume, taker_buy_ratio,
                         direction, is_method_b=False,
                     )
-                elif gain_pct > prev_gain * (1 + METHOD_B_GAIN_ADVANTAGE / 100):
+                elif gain_pct >= prev_gain * 0.8:
+                    # 新K漲幅 ≥ 前觸發K × 0.8，局部更換基準K棒
                     _apply_trigger(
                         st, symbol, open_, close, high, low,
                         current_ts, gain_pct, vol_ratio, quote_volume, taker_buy_ratio,
@@ -403,23 +422,7 @@ def on_new_15m_candle_long(
 
     _DIAG["volume_ok"] += 1  # [DIAG]
 
-    # ── 第一層：技術面濾波（SMA 200）────────────────────────────────────────────
-    if TREND_FILTER_ENABLED:
-        ohlc_4h = models.symbol_state.get(symbol, {}).get("kline_4h_ohlc")
-        if ohlc_4h and len(ohlc_4h) >= TREND_FILTER_SMA_PERIOD:
-            closes_4h    = [c[4] for c in ohlc_4h]
-            sma_200      = sum(closes_4h[-TREND_FILTER_SMA_PERIOD:]) / TREND_FILTER_SMA_PERIOD
-            current_4h_c = closes_4h[-1]
-            if current_4h_c < sma_200:
-                log.debug(
-                    f"[策略-T1] {symbol} 技術面濾波拒絕 "
-                    f"close={current_4h_c:.6f} < SMA200={sma_200:.6f}"
-                )
-                return None
-
-    _DIAG["sma_passed"] += 1  # [DIAG]
-
-    # ── 第二層：突破確認強化 ─────────────────────────────────────────────────────
+    # ── 突破 K 實體強度 ──────────────────────────────────────────────────────────
     candle_range      = high - low
     candle_body_ratio = (close - open_15m) / candle_range if candle_range > 0 else 0.0
     if candle_body_ratio < BREAKOUT_BODY_RATIO:
@@ -441,17 +444,6 @@ def on_new_15m_candle_long(
 
     _DIAG["atr_passed"] += 1  # [DIAG]
 
-    # ── 第三層：Pump Candle Taker Buy Ratio ──────────────────────────────────────
-    taker_ratio = st.get("pump_candle_taker_buy_ratio") or 0.0
-    if taker_ratio < PUMP_CANDLE_TAKER_BUY_MIN:
-        log.debug(
-            f"[策略-T1] {symbol} Pump Candle Taker Buy Ratio 不足 "
-            f"{taker_ratio:.2f} < {PUMP_CANDLE_TAKER_BUY_MIN}"
-        )
-        return None
-
-    _DIAG["taker_passed"] += 1  # [DIAG]
-
     # ── 冷卻期三層檢查 ───────────────────────────────────────────────────────────
     now              = time.time()
     consolidation_id = st.get("consolidation_id")
@@ -468,7 +460,7 @@ def on_new_15m_candle_long(
 
     _DIAG["cooldown_passed"] += 1  # [DIAG]
 
-    # ── 止損計算（V2：非連續，找所有放量 K 最低點）───────────────────────────────
+    # ── 止損計算（非連續，找所有放量 K 最低點）──────────────────────────────────
     _4H_MS             = 4 * 3600 * 1000
     current_4h_open_ms = (open_time_ms // _4H_MS) * _4H_MS
     lookback_threshold = avg_vol * LOOKBACK_VOLUME_MULT
@@ -491,6 +483,32 @@ def on_new_15m_candle_long(
         stop_loss = min(low, min(strong_lows))
     stop_loss = max(stop_loss, st["consolidation_low"])
 
+    # ── 止損距離過濾（3–5%） ────────────────────────────────────────────────────
+    risk_pct = (close - stop_loss) / close * 100
+    if risk_pct < BREAKOUT_RISK_PCT_MIN or risk_pct > BREAKOUT_RISK_PCT_MAX:
+        log.debug(
+            f"[策略-T1] {symbol} 止損距離 {risk_pct:.2f}% 不在 "
+            f"[{BREAKOUT_RISK_PCT_MIN}%, {BREAKOUT_RISK_PCT_MAX}%]"
+        )
+        return None
+
+    _DIAG["risk_range_passed"] += 1  # [DIAG]
+
+    # ── 集體觸發過濾（live 系統：≥ BATCH_SIGNAL_LIMIT 筆整批冷卻）───────────────
+    batch_count = _batch_register(open_time_ms, symbol)
+    if batch_count >= BATCH_SIGNAL_LIMIT:
+        log.info(
+            f"[策略-T1] 集體觸發過濾 window={open_time_ms} "
+            f"count={batch_count} ≥ {BATCH_SIGNAL_LIMIT}，整批冷卻"
+        )
+        for sym in _WINDOW_BATCH.get(open_time_ms, []):
+            other_st = models.strategy_state.get(sym)
+            if other_st:
+                other_st["last_alert_ts"] = now
+        return None
+
+    _DIAG["batch_passed"] += 1  # [DIAG]
+
     # ── 發出訊號，更新三層冷卻狀態 ──────────────────────────────────────────────
     st["last_alert_ts"]                = now
     st["last_signal_consolidation_id"] = consolidation_id
@@ -502,26 +520,24 @@ def on_new_15m_candle_long(
     log.info(
         f"[策略-T1] {symbol} 觸發！"
         f"close={close:.6f} > threshold={breakout_threshold:.6f} | "
-        f"量能 {vol_ratio:.1f}× | 止損={stop_loss:.6f}"
+        f"量能 {vol_ratio:.1f}× | 止損={stop_loss:.6f} | 風險={risk_pct:.2f}%"
     )
     return {
-        "type":                        "type1",
-        "symbol":                      symbol,
-        "close":                       close,
-        "stop_loss":                   stop_loss,
-        "top":                         top,
-        "bottom":                      st["consolidation_low"],
-        "vol_ratio":                   vol_ratio,
-        "pump_time":                   st["pump_candle_time"],
-        "pump_high":                   st["pump_candle_high"],
-        "pump_low":                    st["pump_candle_low"],
-        "candle_open_time_ms":         open_time_ms,
-        # V2 新增欄位
-        "trend_filter_status":         "passed",
-        "pump_candle_taker_buy_ratio": taker_ratio,
-        "candle_body_ratio":           candle_body_ratio,
-        "breakout_atr_ratio":          breakout_atr_ratio,
-        "method_b_triggered":          st.get("is_method_b", False),
+        "type":               "type1",
+        "symbol":             symbol,
+        "close":              close,
+        "stop_loss":          stop_loss,
+        "top":                top,
+        "bottom":             st["consolidation_low"],
+        "vol_ratio":          vol_ratio,
+        "pump_time":          st["pump_candle_time"],
+        "pump_high":          st["pump_candle_high"],
+        "pump_low":           st["pump_candle_low"],
+        "candle_open_time_ms": open_time_ms,
+        "candle_body_ratio":  candle_body_ratio,
+        "breakout_atr_ratio": breakout_atr_ratio,
+        "risk_pct":           risk_pct,
+        "method_b_triggered": st.get("is_method_b", False),
     }
 
 
