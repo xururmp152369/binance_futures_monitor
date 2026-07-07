@@ -28,6 +28,7 @@
 
 | 欄位 | 說明 |
 |------|------|
+| `EXCHANGE` | 交易所（`"binance"` 或 `"bingx"`，選填；預設 `"binance"`） |
 | `PRD_STRATEGY` | 觸發**正式**自動下單的策略代號陣列（選填；`[]` 停用） |
 | `DEV_STRATEGY` | 觸發**模擬**自動下單的策略代號陣列（選填；`[]` 停用） |
 | `NOTIFY_STRATEGY` | 接收訊號通知的策略代號陣列（選填；`[]` 靜默；欄位不存在則發提醒） |
@@ -35,6 +36,7 @@
 | `SHORT_ORDER_LIMIT` | 同時持有空單部位數上限（選填正整數） |
 
 `PRD_STRATEGY` 非空時需填 `PRD_API_KEY`/`PRD_SECRET_KEY`；`DEV_STRATEGY` 非空時需填 `API_KEY`/`SECRET_KEY`。  
+BingX 用戶：`API_KEY`/`SECRET_KEY` 填 BingX Virtual Trading（open-api-vst.bingx.com）金鑰，`PRD_API_KEY`/`PRD_SECRET_KEY` 填正式環境金鑰。  
 訊號路由：Type 1 → `"long_breakout"`；Type 3 → `"death_cross_short"`。公頻 `CHAT_ID` 永遠收到所有訊號。
 
 ---

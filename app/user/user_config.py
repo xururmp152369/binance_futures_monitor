@@ -295,7 +295,8 @@ CONFIG_TEMPLATE_TEXT = """\
 請複製下方 JSON，填寫後直接傳給我：
 
 *欄位說明：*
-• `API_KEY` / `SECRET_KEY`：模擬帳戶（Testnet）API 金鑰（DEV\\_STRATEGY 有值時必填）
+• `EXCHANGE`：交易所（`"binance"` 或 `"bingx"`，預設 `"binance"`）
+• `API_KEY` / `SECRET_KEY`：模擬帳戶 API 金鑰（Binance Testnet / BingX Virtual Trading，DEV\\_STRATEGY 有值時必填）
 • `PRD_API_KEY` / `PRD_SECRET_KEY`：正式帳戶 API 金鑰（PRD\\_STRATEGY 有值時必填）
 • `PRD_STRATEGY`：觸發*正式自動開單*的策略（填 `[]` 停用正式下單）
   ‣ `"long_breakout"`：多頭盤整突破（4h 帶量拉漲 → 盤整 → 15m 帶量突破做多）
@@ -322,6 +323,7 @@ CONFIG_TEMPLATE_TEXT = """\
 
 ```
 {
+    "EXCHANGE": "binance",
     "API_KEY": "",
     "SECRET_KEY": "",
     "PRD_API_KEY": "",
@@ -442,6 +444,10 @@ def validate_config(data: dict) -> tuple[bool, list[str]]:
     blacklist = data.get("SYMBOL_BLACKLIST")
     if not isinstance(blacklist, list) or not all(isinstance(s, str) for s in blacklist):
         errors.append("`SYMBOL_BLACKLIST` 必須為字串陣列，如 [] 或 [\"BTCUSDT\"]")
+
+    exchange = data.get("EXCHANGE", "binance")
+    if exchange not in ("binance", "bingx"):
+        errors.append("`EXCHANGE` 必須為 `\"binance\"` 或 `\"bingx\"`")
 
     if not isinstance(data.get("ENABLED"), bool):
         errors.append("`ENABLED` 必須為 true 或 false")
