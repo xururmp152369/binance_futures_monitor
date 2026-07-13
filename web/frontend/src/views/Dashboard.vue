@@ -32,102 +32,6 @@ const phaseOptions: Record<Strategy, { value: string; label: string }[]> = {
   fibonacci_short: [{ value: 'ALL', label: '全部' }],
 }
 
-// ── TODO: 測試用 mock 資料，確認樣式後請移除此區塊 ──────────────────────────
-const now = Math.floor(Date.now() / 1000)
-const MOCK: Record<Strategy, (LongBreakoutCoin | DeathCrossCoin | FibonacciCoin)[]> = {
-  long_breakout: [
-    {
-      symbol: 'BTCUSDT',
-      phase: 'ready',
-      trigger_time_ts: now - 3600 * 20,
-      gain_pct: 4.2,
-      volume_ratio: 5.3,
-      taker_buy_ratio: 0.72,
-      is_method_b: false,
-      consolidation_hours: 18.5,
-      consolidation_low: 104000,
-      consolidation_high: 106500,
-      current_price: 106200,
-      distance_from_top_pct: -0.28,
-    } as LongBreakoutCoin,
-    {
-      symbol: 'ETHUSDT',
-      phase: 'tracking',
-      trigger_time_ts: now - 3600 * 8,
-      gain_pct: 3.1,
-      volume_ratio: 3.8,
-      taker_buy_ratio: 0.68,
-      is_method_b: true,
-      consolidation_hours: 7.5,
-      consolidation_low: 3800,
-      consolidation_high: 3950,
-      current_price: 3920,
-      distance_from_top_pct: -0.76,
-    } as LongBreakoutCoin,
-    {
-      symbol: 'SOLUSDT',
-      phase: 'ready',
-      trigger_time_ts: now - 3600 * 36,
-      gain_pct: 5.8,
-      volume_ratio: 7.1,
-      taker_buy_ratio: 0.81,
-      is_method_b: false,
-      consolidation_hours: 34.0,
-      consolidation_low: 185,
-      consolidation_high: 195,
-      current_price: 197,
-      distance_from_top_pct: 1.03,
-    } as LongBreakoutCoin,
-  ],
-  death_cross: [
-    {
-      symbol: 'BNBUSDT',
-      phase: 'ALERT',
-      alert_time_ts: now - 3600 * 14,
-      close_t0: 650,
-      entry_count: 1,
-      max_entries: 2,
-      alert_elapsed_hours: 14.0,
-      alert_window_hours: 48,
-      current_price: 632,
-    } as DeathCrossCoin,
-    {
-      symbol: 'ADAUSDT',
-      phase: 'WATCHING',
-      alert_time_ts: null,
-      close_t0: null,
-      entry_count: 0,
-      max_entries: 2,
-      alert_elapsed_hours: null,
-      alert_window_hours: 48,
-      current_price: 0.72,
-    } as DeathCrossCoin,
-  ],
-  fibonacci_long: [
-    {
-      symbol: 'LINKUSDT',
-      long_reset_bar_time: (now - 3600 * 3) * 1000,
-      short_reset_bar_time: 0,
-      current_price: 18.5,
-    } as FibonacciCoin,
-    {
-      symbol: 'DOTUSDT',
-      long_reset_bar_time: (now - 3600 * 1) * 1000,
-      short_reset_bar_time: 0,
-      current_price: 6.8,
-    } as FibonacciCoin,
-  ],
-  fibonacci_short: [
-    {
-      symbol: 'AVAXUSDT',
-      long_reset_bar_time: 0,
-      short_reset_bar_time: (now - 3600 * 2) * 1000,
-      current_price: 35.2,
-    } as FibonacciCoin,
-  ],
-}
-// ── mock 結束 ────────────────────────────────────────────────────────────────
-
 const activeStrategy = ref<Strategy>('long_breakout')
 const activePhase = ref('ALL')
 const page = ref(1)
@@ -159,18 +63,10 @@ async function fetchData() {
     const url = `${base}${sep}phase=${activePhase.value}&page=${page.value}&per_page=${perPage.value}`
     const res = await fetch(url)
     const data: PaginatedResponse<LongBreakoutCoin | DeathCrossCoin | FibonacciCoin> = await res.json()
-
-    // TODO: 測試用 mock 注入 — 確認樣式後移除下面這兩行
-    const mock = MOCK[s] ?? []
-    items.value = [...mock, ...data.items]
-    total.value = data.total + mock.length
-
+    items.value = data.items
+    total.value = data.total
   } catch (err) {
     console.error(err)
-    // API 不可用時仍顯示 mock 資料
-    const mock = MOCK[activeStrategy.value] ?? []
-    items.value = mock
-    total.value = mock.length
   } finally {
     loading.value = false
   }
