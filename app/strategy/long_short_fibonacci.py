@@ -269,10 +269,10 @@ def on_new_fib_candle(symbol: str, candle: tuple, interval: str) -> list[dict]:
             "scan_timestamp": int(time.time()),
         }
         signals.append(signal)
-        log.info(
-            f"[Fib] {symbol} {direction} 訊號觸發 "
-            f"bar9_time={bar9_time} entry={bar9[4]:.6f} sl={result['sl']:.6f} tp1={result['tp1']:.6f} "
-            f"→ 重置 barA，下次需 bar_a_time >= {bar9_time}"
-        )
+        # log.info(
+        #     f"[Fib] {symbol} {direction} 訊號觸發 "
+        #     f"bar9_time={bar9_time} entry={bar9[4]:.6f} sl={result['sl']:.6f} tp1={result['tp1']:.6f} "
+        #     f"→ 重置 barA，下次需 bar_a_time >= {bar9_time}"
+        # )
 
     return signals
