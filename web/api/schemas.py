@@ -1,6 +1,8 @@
 from __future__ import annotations
 from pydantic import BaseModel
-from typing import Optional
+from typing import Generic, Optional, TypeVar
+
+T = TypeVar("T")
 
 
 class LongBreakoutCoin(BaseModel):
@@ -37,25 +39,11 @@ class FibonacciCoin(BaseModel):
     current_price: Optional[float]
 
 
-class PaginatedLongBreakout(BaseModel):
+class Paginated(BaseModel, Generic[T]):
     total: int
     page: int
     per_page: int
-    items: list[LongBreakoutCoin]
-
-
-class PaginatedDeathCross(BaseModel):
-    total: int
-    page: int
-    per_page: int
-    items: list[DeathCrossCoin]
-
-
-class PaginatedFibonacci(BaseModel):
-    total: int
-    page: int
-    per_page: int
-    items: list[FibonacciCoin]
+    items: list[T]
 
 
 class HealthResponse(BaseModel):

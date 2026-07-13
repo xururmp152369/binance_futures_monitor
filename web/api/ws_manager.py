@@ -18,14 +18,14 @@ class ConnectionManager:
         if not self._clients:
             return
         message = json.dumps(data)
-        dead: set[WebSocket] = set()
-        for ws in list(self._clients):
-            try:
-                await ws.send_text(message)
-            except Exception:
-                dead.add(ws)
-        for ws in dead:
-            self._clients.discard(ws)
+        clients = list(self._clients)
+        results = await asyncio.gather(
+            *[ws.send_text(message) for ws in clients],
+            return_exceptions=True,
+        )
+        for ws, result in zip(clients, results):
+            if isinstance(result, Exception):
+                self._clients.discard(ws)
 
 
 manager = ConnectionManager()

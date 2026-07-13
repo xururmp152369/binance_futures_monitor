@@ -8,9 +8,7 @@ from web.api.schemas import (
     LongBreakoutCoin,
     DeathCrossCoin,
     FibonacciCoin,
-    PaginatedLongBreakout,
-    PaginatedDeathCross,
-    PaginatedFibonacci,
+    Paginated,
     HealthResponse,
 )
 
@@ -26,22 +24,21 @@ def _current_price(symbol: str) -> float | None:
 
 @router.get("/health", response_model=HealthResponse)
 def health():
-    lb_tracking = sum(
-        1 for st in models.strategy_state.values()
-        if st.get("phase") == StrategyPhase.TRACKING
-    )
-    lb_ready = sum(
-        1 for st in models.strategy_state.values()
-        if st.get("phase") == StrategyPhase.READY
-    )
-    dc_watching = sum(
-        1 for st in models.death_cross_state.values()
-        if st.get("phase") == DeathCrossPhase.WATCHING
-    )
-    dc_alert = sum(
-        1 for st in models.death_cross_state.values()
-        if st.get("phase") == DeathCrossPhase.ALERT
-    )
+    lb_tracking = lb_ready = 0
+    for st in models.strategy_state.values():
+        p = st.get("phase")
+        if p == StrategyPhase.TRACKING:
+            lb_tracking += 1
+        elif p == StrategyPhase.READY:
+            lb_ready += 1
+
+    dc_watching = dc_alert = 0
+    for st in models.death_cross_state.values():
+        p = st.get("phase")
+        if p == DeathCrossPhase.WATCHING:
+            dc_watching += 1
+        elif p == DeathCrossPhase.ALERT:
+            dc_alert += 1
     return HealthResponse(
         status="ok",
         total_symbols=len(models.symbol_state),
@@ -53,7 +50,7 @@ def health():
     )
 
 
-@router.get("/strategies/long_breakout", response_model=PaginatedLongBreakout)
+@router.get("/strategies/long_breakout", response_model=Paginated[LongBreakoutCoin])
 def long_breakout(
     phase: str = Query("ALL", description="TRACKING | READY | ALL"),
     page: int = Query(1, ge=1),
@@ -106,7 +103,7 @@ def long_breakout(
 
     total = len(items)
     start = (page - 1) * per_page
-    return PaginatedLongBreakout(
+    return Paginated[LongBreakoutCoin](
         total=total,
         page=page,
         per_page=per_page,
@@ -114,7 +111,7 @@ def long_breakout(
     )
 
 
-@router.get("/strategies/death_cross", response_model=PaginatedDeathCross)
+@router.get("/strategies/death_cross", response_model=Paginated[DeathCrossCoin])
 def death_cross(
     phase: str = Query("ALL", description="WATCHING | ALERT | ALL"),
     page: int = Query(1, ge=1),
@@ -153,7 +150,7 @@ def death_cross(
     items.sort(key=lambda x: x.symbol)
     total = len(items)
     start = (page - 1) * per_page
-    return PaginatedDeathCross(
+    return Paginated[DeathCrossCoin](
         total=total,
         page=page,
         per_page=per_page,
@@ -161,7 +158,7 @@ def death_cross(
     )
 
 
-@router.get("/strategies/fibonacci", response_model=PaginatedFibonacci)
+@router.get("/strategies/fibonacci", response_model=Paginated[FibonacciCoin])
 def fibonacci(
     direction: str = Query("long", description="long | short"),
     page: int = Query(1, ge=1),
@@ -188,7 +185,7 @@ def fibonacci(
     )
     total = len(items)
     start = (page - 1) * per_page
-    return PaginatedFibonacci(
+    return Paginated[FibonacciCoin](
         total=total,
         page=page,
         per_page=per_page,

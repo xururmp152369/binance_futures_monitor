@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import ChartDialog from './ChartDialog.vue'
 import type { LongBreakoutCoin, DeathCrossCoin, FibonacciCoin } from '../types'
 
@@ -32,6 +32,11 @@ function fmtTime(ts: number | null | undefined) {
   return `${mm}/${dd} ${hh}:${mi}`
 }
 
+function fmtSigned(v: number | null | undefined) {
+  if (v == null) return '—'
+  return (v >= 0 ? '+' : '') + v.toFixed(2) + '%'
+}
+
 function phaseBadgeClass(phase: string) {
   const map: Record<string, string> = {
     tracking: 'bg-blue-500/20 text-blue-400',
@@ -52,9 +57,14 @@ function phaseLabel(phase: string) {
   return map[phase] ?? phase.toUpperCase()
 }
 
-const lb = () => props.coin as LongBreakoutCoin
-const dc = () => props.coin as DeathCrossCoin
-const fib = () => props.coin as FibonacciCoin
+const lb = computed(() => props.coin as LongBreakoutCoin)
+const dc = computed(() => props.coin as DeathCrossCoin)
+const fib = computed(() => props.coin as FibonacciCoin)
+const coinPhase = computed(() => {
+  if (props.strategy === 'long_breakout') return lb.value.phase
+  if (props.strategy === 'death_cross') return dc.value.phase
+  return ''
+})
 
 function tvMiniUrl(symbol: string) {
   const params = new URLSearchParams({
@@ -78,9 +88,9 @@ function tvMiniUrl(symbol: string) {
       <span class="font-bold text-white tracking-wide">{{ coin.symbol }}</span>
       <span
         v-if="strategy !== 'fibonacci_long' && strategy !== 'fibonacci_short'"
-        :class="['text-xs px-2 py-0.5 rounded-full font-medium', phaseBadgeClass((coin as LongBreakoutCoin | DeathCrossCoin).phase)]"
+        :class="['text-xs px-2 py-0.5 rounded-full font-medium', phaseBadgeClass(coinPhase)]"
       >
-        {{ phaseLabel((coin as LongBreakoutCoin | DeathCrossCoin).phase) }}
+        {{ phaseLabel(coinPhase) }}
       </span>
     </div>
 
@@ -102,22 +112,22 @@ function tvMiniUrl(symbol: string) {
       <!-- Long Breakout -->
       <template v-if="strategy === 'long_breakout'">
         <div class="grid grid-cols-2 gap-x-4 gap-y-0.5">
-          <div>觸發時間 <span class="text-gray-200">{{ fmtTime(lb().trigger_time_ts) }}</span></div>
-          <div>漲幅 <span class="text-green-400">+{{ fmt(lb().gain_pct) }}%</span></div>
-          <div>量能 <span class="text-gray-200">{{ fmt(lb().volume_ratio) }}x</span></div>
-          <div>Taker 買 <span class="text-gray-200">{{ fmt((lb().taker_buy_ratio ?? 0) * 100) }}%</span></div>
-          <div>盤整 <span class="text-gray-200">{{ lb().consolidation_hours ?? '—' }}h</span></div>
-          <div v-if="lb().is_method_b" class="text-purple-400">Method B</div>
+          <div>觸發時間 <span class="text-gray-200">{{ fmtTime(lb.trigger_time_ts) }}</span></div>
+          <div>漲幅 <span class="text-green-400">+{{ fmt(lb.gain_pct) }}%</span></div>
+          <div>量能 <span class="text-gray-200">{{ fmt(lb.volume_ratio) }}x</span></div>
+          <div>Taker 買 <span class="text-gray-200">{{ fmt((lb.taker_buy_ratio ?? 0) * 100) }}%</span></div>
+          <div>盤整 <span class="text-gray-200">{{ lb.consolidation_hours ?? '—' }}h</span></div>
+          <div v-if="lb.is_method_b" class="text-purple-400">Method B</div>
           <div v-else class="opacity-0">—</div>
         </div>
         <div class="border-t border-gray-800 pt-1 grid grid-cols-2 gap-x-4">
-          <div>底部 <span class="text-gray-200">{{ fmtPrice(lb().consolidation_low) }}</span></div>
-          <div>頂部 <span class="text-gray-200">{{ fmtPrice(lb().consolidation_high) }}</span></div>
-          <div>現價 <span class="text-gray-200">{{ fmtPrice(lb().current_price) }}</span></div>
+          <div>底部 <span class="text-gray-200">{{ fmtPrice(lb.consolidation_low) }}</span></div>
+          <div>頂部 <span class="text-gray-200">{{ fmtPrice(lb.consolidation_high) }}</span></div>
+          <div>現價 <span class="text-gray-200">{{ fmtPrice(lb.current_price) }}</span></div>
           <div>
             距頂
-            <span :class="(lb().distance_from_top_pct ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'">
-              {{ lb().distance_from_top_pct != null ? (lb().distance_from_top_pct! >= 0 ? '+' : '') + fmt(lb().distance_from_top_pct) + '%' : '—' }}
+            <span :class="(lb.distance_from_top_pct ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'">
+              {{ fmtSigned(lb.distance_from_top_pct) }}
             </span>
           </div>
         </div>
@@ -126,22 +136,22 @@ function tvMiniUrl(symbol: string) {
       <!-- Death Cross -->
       <template v-else-if="strategy === 'death_cross'">
         <div class="grid grid-cols-2 gap-x-4 gap-y-0.5">
-          <div>T0 時間 <span class="text-gray-200">{{ fmtTime(dc().alert_time_ts) }}</span></div>
-          <div>T0 收盤 <span class="text-gray-200">{{ fmtPrice(dc().close_t0) }}</span></div>
-          <div>已過 <span class="text-gray-200">{{ dc().alert_elapsed_hours ?? '—' }}h</span></div>
-          <div>窗口 <span class="text-gray-200">{{ dc().alert_window_hours }}h</span></div>
-          <div>進場 <span class="text-gray-200">{{ dc().entry_count }}/{{ dc().max_entries }}</span></div>
-          <div>現價 <span class="text-gray-200">{{ fmtPrice(dc().current_price) }}</span></div>
+          <div>T0 時間 <span class="text-gray-200">{{ fmtTime(dc.alert_time_ts) }}</span></div>
+          <div>T0 收盤 <span class="text-gray-200">{{ fmtPrice(dc.close_t0) }}</span></div>
+          <div>已過 <span class="text-gray-200">{{ dc.alert_elapsed_hours ?? '—' }}h</span></div>
+          <div>窗口 <span class="text-gray-200">{{ dc.alert_window_hours }}h</span></div>
+          <div>進場 <span class="text-gray-200">{{ dc.entry_count }}/{{ dc.max_entries }}</span></div>
+          <div>現價 <span class="text-gray-200">{{ fmtPrice(dc.current_price) }}</span></div>
         </div>
-        <div v-if="dc().alert_time_ts" class="mt-1">
+        <div v-if="dc.alert_time_ts" class="mt-1">
           <div class="w-full bg-gray-800 rounded-full h-1.5">
             <div
               class="bg-red-500 h-1.5 rounded-full"
-              :style="`width: ${Math.min(100, ((dc().alert_elapsed_hours ?? 0) / dc().alert_window_hours) * 100)}%`"
+              :style="`width: ${Math.min(100, ((dc.alert_elapsed_hours ?? 0) / dc.alert_window_hours) * 100)}%`"
             />
           </div>
           <div class="text-right text-gray-500 mt-0.5">
-            剩餘 {{ Math.max(0, dc().alert_window_hours - (dc().alert_elapsed_hours ?? 0)).toFixed(1) }}h
+            剩餘 {{ Math.max(0, dc.alert_window_hours - (dc.alert_elapsed_hours ?? 0)).toFixed(1) }}h
           </div>
         </div>
       </template>
@@ -149,16 +159,16 @@ function tvMiniUrl(symbol: string) {
       <!-- Fibonacci Long -->
       <template v-else-if="strategy === 'fibonacci_long'">
         <div class="grid grid-cols-1 gap-y-0.5">
-          <div>多單 bar9 <span class="text-gray-200">{{ fib().long_reset_bar_time ? fmtTime(fib().long_reset_bar_time / 1000) : '—' }}</span></div>
-          <div>現價 <span class="text-gray-200">{{ fmtPrice(fib().current_price) }}</span></div>
+          <div>多單 bar9 <span class="text-gray-200">{{ fib.long_reset_bar_time ? fmtTime(fib.long_reset_bar_time / 1000) : '—' }}</span></div>
+          <div>現價 <span class="text-gray-200">{{ fmtPrice(fib.current_price) }}</span></div>
         </div>
       </template>
 
       <!-- Fibonacci Short -->
       <template v-else>
         <div class="grid grid-cols-1 gap-y-0.5">
-          <div>空單 bar9 <span class="text-gray-200">{{ fib().short_reset_bar_time ? fmtTime(fib().short_reset_bar_time / 1000) : '—' }}</span></div>
-          <div>現價 <span class="text-gray-200">{{ fmtPrice(fib().current_price) }}</span></div>
+          <div>空單 bar9 <span class="text-gray-200">{{ fib.short_reset_bar_time ? fmtTime(fib.short_reset_bar_time / 1000) : '—' }}</span></div>
+          <div>現價 <span class="text-gray-200">{{ fmtPrice(fib.current_price) }}</span></div>
         </div>
       </template>
     </div>

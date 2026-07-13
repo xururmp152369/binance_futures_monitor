@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import CoinCard from '../components/CoinCard.vue'
 import Pagination from '../components/Pagination.vue'
 import { useWebSocket } from '../composables/useWebSocket'
@@ -81,11 +81,19 @@ async function fetchHealth() {
 
 watch([activeStrategy, activePhase, page, perPage], fetchData)
 
+let dataTimer: ReturnType<typeof setInterval> | null = null
+let healthTimer: ReturnType<typeof setInterval> | null = null
+
 onMounted(() => {
   fetchData()
   fetchHealth()
-  setInterval(fetchData, 5000)
-  setInterval(fetchHealth, 10000)
+  dataTimer = setInterval(fetchData, 5000)
+  healthTimer = setInterval(fetchHealth, 10000)
+})
+
+onUnmounted(() => {
+  if (dataTimer) clearInterval(dataTimer)
+  if (healthTimer) clearInterval(healthTimer)
 })
 
 useWebSocket(() => {
