@@ -3,6 +3,7 @@ import sys
 import urllib.request
 from pathlib import Path
 from datetime import datetime
+import uvicorn
 from .setting import models
 from .command import bot_enum
 from binance import AsyncClient
@@ -153,6 +154,14 @@ async def main():
         screen_task  = asyncio.create_task(periodic_screen(client))
         restart_task = asyncio.create_task(monthly_restart_scheduler(client))
 
+        # 儀表板 Web Server
+        from web.api.app import create_web_app
+        web_config = uvicorn.Config(
+            app=create_web_app(), host="0.0.0.0", port=8000, log_level="warning"
+        )
+        web_server = uvicorn.Server(web_config)
+        web_task = asyncio.create_task(web_server.serve())
+
         log.info("三個背景任務已啟動（含每月重啟排程），準備啟動 Telegram polling...")
 
         # 關鍵：Windows 下不能用 application.run_polling()
@@ -168,7 +177,7 @@ async def main():
 
         # 等待所有背景任務（包含每日重啟排程）
         # Telegram polling 已經在背景跑了
-        await asyncio.gather(price_task, screen_task, restart_task)
+        await asyncio.gather(price_task, screen_task, restart_task, web_task)
 
     except KeyboardInterrupt:
         log.info("\n收到中斷信號，停止中...")

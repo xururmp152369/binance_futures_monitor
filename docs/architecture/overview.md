@@ -24,6 +24,7 @@ flowchart TD
     subgraph OutputLayer[輸出層]
         SA[strategy_alerts.py\nTelegram 發送]
         OM[order_manager.py\n自動下單]
+        WEB[web/api/\nFastAPI 儀表板]
     end
 
     subgraph BotLayer[Bot 控制層]
@@ -33,7 +34,7 @@ flowchart TD
     end
 
     subgraph Storage[全域狀態]
-        MS[models.py\nsymbol_state\nstrategy_state\ndeath_cross_state]
+        MS[models.py\nsymbol_state\nstrategy_state\ndeath_cross_state\nfibonacci_state]
     end
 
     BN -->|markPrice + kline| WS
@@ -49,6 +50,8 @@ flowchart TD
     CMD -->|查詢/設定| UC
     MON -->|即時廢棄掃描| SM
     WS & SM & LB & DC <-->|讀寫| MS
+    MS -->|唯讀| WEB
+    WEB -->|HTTP/WS| BROWSER[瀏覽器儀表板]
 ```
 
 ---
@@ -124,6 +127,7 @@ sequenceDiagram
 | `symbol_state` | 每幣種即時狀態（price, kline deques） | `binance_opendata` |
 | `strategy_state` | 多頭策略狀態 dict（per symbol） | `long_breakout` |
 | `death_cross_state` | 死亡叉策略狀態 dict（per symbol） | `death_cross_short` |
+| `fibonacci_state` | Fibonacci 策略狀態 dict（per symbol，含 long/short reset bar 時間）| `long_short_fibonacci` |
 
 ---
 
@@ -138,11 +142,12 @@ flowchart TD
     E --> F[load_historical_data_batch\n載入 4h/15m/1h/1d 歷史資料]
     F --> G[replay_historical_4h_candles\n多頭狀態回播]
     F --> H[replay_historical_daily_candles_dc\n死亡叉狀態回播]
-    G & H --> I[啟動三個背景任務]
+    G & H --> I[啟動四個背景任務]
     I --> J[monitor_price_websocket\nWebSocket 即時更新]
     I --> K[periodic_screen\n每 10 秒週期掃描]
     I --> L[monthly_restart_scheduler\n每月 1 日重啟]
-    J & K & L --> M[Telegram polling 啟動]
+    I --> N[uvicorn.Server.serve\n儀表板 HTTP :8000]
+    J & K & L & N --> M[Telegram polling 啟動]
 ```
 
 > **歷史回播的目的**：啟動時從 Binance 載入歷史 K 棒，依序重播以恢復策略狀態，確保重啟後不遺失進行中的盤整追蹤或死亡叉監控。

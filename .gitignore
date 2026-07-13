@@ -38,7 +38,13 @@ Thumbs.db
 # 其他常見忽略
 .pytest_cache/
 *.egg-info/
-dist/
 build/
 *.prof
 *.cov
+
+# Python build 產物（根目錄 dist/，不誤殺前端）
+/dist/
+
+# 前端開發暫存（dist 由 Docker multi-stage build，不進 git）
+web/frontend/node_modules/
+web/frontend/.vite/

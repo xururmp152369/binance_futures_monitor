@@ -9,3 +9,8 @@ __pycache__/
 _codeExecution.log
 venv/
 .env
+
+# 前端開發檔案（Docker 內由 Stage 1 自行 build，不需要這些）
+web/frontend/node_modules/
+web/frontend/.vite/
+web/frontend/dist/

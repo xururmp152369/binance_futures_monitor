@@ -15,6 +15,7 @@
 | 文件 | 說明 |
 |------|------|
 | [docs/architecture/overview.md](docs/architecture/overview.md) | 系統全貌、資料流、模組職責、啟動流程 |
+| [docs/architecture/dashboard.md](docs/architecture/dashboard.md) | 網頁儀表板架構、API endpoints、前端開發指南 |
 | [docs/specs/long_breakout.md](docs/specs/long_breakout.md) | Type 1 完整行為規格 + 狀態機圖 |
 | [docs/specs/death_cross_short.md](docs/specs/death_cross_short.md) | Type 3 完整行為規格 + 狀態機圖 |
 | [docs/specs/long_short_fibonacci.md](docs/specs/long_short_fibonacci.md) | Fibonacci 策略完整行為規格 |
@@ -146,7 +147,27 @@ python backtest/run.py --strategy all --start 2025-06-04  # --end 預設今天
 
 ---
 
+---
+
+## 網頁儀表板
+
+```bash
+# 開發模式（需先啟動後端）
+python -m app.main                           # 後端 :8000
+cd web/frontend && npm run dev               # 前端 :5173（proxy → :8000）
+
+# 生產（build 後由 FastAPI serve）
+cd web/frontend && npm run build
+python -m app.main                           # http://localhost:8000
+```
+
+- 儀表板文件：[docs/architecture/dashboard.md](docs/architecture/dashboard.md)
+- VSCode 需安裝 **Vue - Official**（`Vue.volar`）擴充以正確解析 `.vue` 檔案
+
+---
+
 ## 待辦規劃
 
+- [x] 網頁儀表板（RWD，TradingView 線圖整合）
 - [ ] 有條件使用機制（推薦碼 / 月費訂閱 / 帶單抽成）
 - [ ] 導入 AI 模型訓練更合理的止盈止損位置

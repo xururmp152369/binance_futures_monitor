@@ -1,3 +1,15 @@
+# ── Stage 1: Build Vue 3 frontend ────────────────────────────────────────────
+FROM node:18-slim AS frontend-builder
+
+WORKDIR /frontend
+
+COPY web/frontend/package*.json ./
+RUN npm ci
+
+COPY web/frontend/ ./
+RUN npm run build
+
+# ── Stage 2: Python app ───────────────────────────────────────────────────────
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -37,5 +49,8 @@ RUN chown -R appuser:appuser /app
 USER appuser
 
 COPY --chown=appuser:appuser . .
+
+# 覆蓋 Stage 1 build 出來的前端靜態檔（優先於 COPY . . 帶進來的任何舊 dist）
+COPY --from=frontend-builder --chown=appuser:appuser /frontend/dist /app/web/frontend/dist
 
 CMD ["python", "-m", "app.main"]
