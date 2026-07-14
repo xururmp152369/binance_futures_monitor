@@ -66,19 +66,6 @@ const coinPhase = computed(() => {
   return ''
 })
 
-function tvMiniUrl(symbol: string) {
-  const params = new URLSearchParams({
-    symbol: `BINANCE:${symbol}.P`,
-    interval: '60',
-    theme: 'dark',
-    hide_top_toolbar: '1',
-    hide_side_toolbar: '1',
-    allow_symbol_change: '0',
-    save_image: '0',
-    toolbar_bg: '#111827',
-  })
-  return `https://s.tradingview.com/widgetembed/?${params.toString()}`
-}
 </script>
 
 <template>
@@ -92,18 +79,6 @@ function tvMiniUrl(symbol: string) {
       >
         {{ phaseLabel(coinPhase) }}
       </span>
-    </div>
-
-    <!-- Mini TradingView thumbnail -->
-    <div class="mx-3 my-2 rounded overflow-hidden bg-gray-800" style="height: 80px;">
-      <iframe
-        :src="tvMiniUrl(coin.symbol)"
-        :key="coin.symbol"
-        class="w-full border-0 pointer-events-none"
-        style="height: 160px; margin-top: -80px;"
-        scrolling="no"
-        frameborder="0"
-      />
     </div>
 
     <!-- Metrics -->

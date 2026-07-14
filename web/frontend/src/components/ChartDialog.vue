@@ -1,4 +1,24 @@
+<script lang="ts">
+// Module-level: shared across all ChartDialog instances so tv.js loads only once
+let scriptPromise: Promise<void> | null = null
+
+function loadTvScript(): Promise<void> {
+  if ((window as any).TradingView) return Promise.resolve()
+  if (!scriptPromise) {
+    scriptPromise = new Promise<void>((resolve, reject) => {
+      const script = document.createElement('script')
+      script.src = 'https://s3.tradingview.com/tv.js'
+      script.onload = () => resolve()
+      script.onerror = () => reject(new Error('tv.js failed to load'))
+      document.head.appendChild(script)
+    })
+  }
+  return scriptPromise
+}
+</script>
+
 <script setup lang="ts">
+import { ref, watch, nextTick, onUnmounted } from 'vue'
 import { Dialog, DialogPanel, DialogTitle, TransitionRoot, TransitionChild } from '@headlessui/vue'
 
 const props = defineProps<{
@@ -8,29 +28,57 @@ const props = defineProps<{
 
 const emit = defineEmits<{ (e: 'close'): void }>()
 
-function tvSymbol(symbol: string) {
-  return `BINANCE:${symbol}.P`
-}
-
-function tvUrl(symbol: string) {
-  const params = new URLSearchParams({
-    symbol: tvSymbol(symbol),
-    interval: '60',
-    theme: 'dark',
-    style: '1',
-    locale: 'en',
-    toolbar_bg: '#1a1a2e',
-    hide_top_toolbar: '0',
-    hide_side_toolbar: '0',
-    allow_symbol_change: '0',
-    studies: 'MAExp@tv-basicstudies',
-  })
-  return `https://s.tradingview.com/widgetembed/?${params.toString()}`
-}
+const containerId = `tv_${Math.random().toString(36).slice(2, 9)}`
+const chartRef = ref<HTMLElement | null>(null)
+let widget: unknown = null
 
 function binanceUrl(symbol: string) {
   return `https://www.binance.com/en/futures/${symbol}`
 }
+
+function clearWidget() {
+  if (widget) {
+    try { (widget as any).remove() } catch {}
+    widget = null
+  }
+  if (chartRef.value) chartRef.value.innerHTML = ''
+}
+
+function initWidget() {
+  if (!chartRef.value || !(window as any).TradingView) return
+  clearWidget()
+  const tv = (window as any).TradingView
+  widget = new tv.widget({
+    container_id: containerId,
+    symbol: `BINANCE:${props.symbol}.P`,
+    interval: '240',
+    theme: 'dark',
+    style: '1',
+    locale: 'en',
+    toolbar_bg: '#1a1a2e',
+    autosize: true,
+  })
+  ;(widget as any).onChartReady(() => {
+    const chart = (widget as any).activeChart()
+    chart.createStudy('Moving Average Exponential', false, false, [15])
+    chart.createStudy('Moving Average Exponential', false, false, [30])
+    chart.createStudy('Moving Average Exponential', false, false, [45])
+    chart.createStudy('Moving Average Exponential', false, false, [60])
+  })
+}
+
+watch(() => props.open, async (isOpen) => {
+  if (!isOpen) { clearWidget(); return }
+  await nextTick()
+  try {
+    await loadTvScript()
+    initWidget()
+  } catch (err) {
+    console.error('TradingView widget failed to load:', err)
+  }
+})
+
+onUnmounted(clearWidget)
 </script>
 
 <template>
@@ -71,14 +119,7 @@ function binanceUrl(symbol: string) {
               </div>
             </div>
             <div class="flex-1 min-h-0">
-              <iframe
-                :src="tvUrl(symbol)"
-                :key="symbol"
-                class="w-full h-full border-0"
-                allowtransparency="true"
-                frameborder="0"
-                scrolling="no"
-              />
+              <div :id="containerId" ref="chartRef" class="w-full h-full" />
             </div>
           </DialogPanel>
         </TransitionChild>
