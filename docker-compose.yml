@@ -9,3 +9,11 @@ services:
       - ./data:/app/data
     ports:
       - "8000:8000"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://binance-futures-monitor:8000
+    depends_on:
+      - binance-futures-monitor

@@ -149,10 +149,9 @@ async def main():
             log.info("無合約，結束程式")
             return
 
-        # 三個背景任務
-        price_task   = asyncio.create_task(monitor_price_websocket(client))
-        screen_task  = asyncio.create_task(periodic_screen(client))
-        restart_task = asyncio.create_task(monthly_restart_scheduler(client))
+        # 背景任務
+        price_task  = asyncio.create_task(monitor_price_websocket(client))
+        screen_task = asyncio.create_task(periodic_screen(client))
 
         # 儀表板 Web Server
         from web.api.app import create_web_app
@@ -162,7 +161,7 @@ async def main():
         web_server = uvicorn.Server(web_config)
         web_task = asyncio.create_task(web_server.serve())
 
-        log.info("三個背景任務已啟動（含每月重啟排程），準備啟動 Telegram polling...")
+        log.info("背景任務已啟動，準備啟動 Telegram polling...")
 
         # 關鍵：Windows 下不能用 application.run_polling()
         # 改用手動四步驟，徹底解決巢狀 event loop 問題
@@ -175,9 +174,7 @@ async def main():
 
         log.info("Telegram Bot 已上線，開始接收使用者指令！")
 
-        # 等待所有背景任務（包含每日重啟排程）
-        # Telegram polling 已經在背景跑了
-        await asyncio.gather(price_task, screen_task, restart_task, web_task)
+        await asyncio.gather(price_task, screen_task, web_task)
 
     except KeyboardInterrupt:
         log.info("\n收到中斷信號，停止中...")

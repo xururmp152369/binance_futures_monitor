@@ -36,29 +36,29 @@ run.py
 
 ```bash
 # 基礎回測（只看 R 倍數，不計算 USDT 損益）
-python backtest/run.py --strategy long_breakout
-python backtest/run.py --strategy death_cross_short
-python backtest/run.py --strategy fibonacci_long
-python backtest/run.py --strategy fibonacci_short
-python backtest/run.py --strategy all
+make backtest STRATEGY=long_breakout
+make backtest STRATEGY=death_cross_short
+make backtest STRATEGY=fibonacci_long
+make backtest STRATEGY=fibonacci_short
+make backtest                              # 等同 STRATEGY=all
 
 # 指定回測天數（預設 30 天，從今天往前推算）
-python backtest/run.py --strategy all --days 60
+make backtest DAYS=60
 
 # 指定回測區間（從 2025-06-04 模擬到 2026-06-04）
-python backtest/run.py --strategy all --start 2025-06-04 --end 2026-06-04
+make backtest START=2025-06-04 END=2026-06-04
 
-# 只指定起始，--end 預設今天
-python backtest/run.py --strategy all --start 2025-06-04
+# 只指定起始，END 預設今天
+make backtest START=2025-06-04
 
 # 強制重新下載資料（忽略快取）
-python backtest/run.py --strategy all --no-cache
+make backtest NO_CACHE=1
 
 # 帳戶模式（套用帳戶止盈策略，計算 USDT 損益）
-python backtest/run.py --strategy all --account 帳號名稱
+make backtest ACCOUNT=帳號名稱
 
 # 先用少數幣種快速驗證
-python backtest/run.py --strategy all --start 2025-06-04 --end 2026-06-04 --symbols BTCUSDT,ETHUSDT
+make backtest START=2025-06-04 END=2026-06-04 SYMBOLS=BTCUSDT,ETHUSDT
 ```
 
 **CLI 參數**：

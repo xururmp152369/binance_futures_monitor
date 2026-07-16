@@ -114,10 +114,29 @@ BingX 用戶：`API_KEY`/`SECRET_KEY` 填 BingX Virtual Trading（open-api-vst.b
 
 ---
 
+## 開發環境準備
+
+專案所有指令透過 `make` 執行。Windows 預設無此工具，首次使用需安裝一次。
+
+```bash
+# 方式 1：winget（Windows 11 內建，推薦）
+winget install GnuWin32.Make
+
+# 方式 2：Scoop
+scoop install make
+
+# 方式 3：Chocolatey
+choco install make
+```
+
+安裝後需重開終端機。建議使用 **Git Bash** 而非 cmd/PowerShell 執行 `make`，因為 Makefile 內含 Unix 指令（`source`、`bash --rcfile` 等）。
+
+---
+
 ## 測試工作流程
 
 ```bash
-python -m pytest tests/ -v --ignore=tests/test_ws_diag.py
+make test
 ```
 
 - 新功能開發：開發 Agent 實作；測試 Agent（worktree 隔離）獨立撰寫測試
@@ -129,19 +148,21 @@ python -m pytest tests/ -v --ignore=tests/test_ws_diag.py
 ## 回測系統
 
 ```bash
-python backtest/run.py --strategy long_breakout
-python backtest/run.py --strategy death_cross_short
-python backtest/run.py --strategy all
-python backtest/run.py --strategy all --days 30 --no-cache
-python backtest/run.py --strategy all --account 帳號名稱
-python backtest/run.py --strategy all --start 2025-06-04 --end 2026-06-04
-python backtest/run.py --strategy all --start 2025-06-04  # --end 預設今天
+make backtest                                          # strategy=all，預設 30 天
+make backtest STRATEGY=long_breakout
+make backtest STRATEGY=death_cross_short
+make backtest DAYS=60
+make backtest NO_CACHE=1                               # 強制重新下載
+make backtest ACCOUNT=帳號名稱                         # P&L 帳戶模式
+make backtest START=2025-06-04 END=2026-06-04
+make backtest START=2025-06-04                         # END 預設今天
+make backtest START=2025-06-04 SYMBOLS=BTCUSDT,ETHUSDT # 快速驗證少數幣種
 ```
 
-- `--days`：從今天往前推算 N 天（預設 30）
-- `--start`/`--end`：指定固定區間，系統自動追加 260 天暖機；優先於 `--days`
+- `DAYS`：從今天往前推算 N 天（預設 30）
+- `START`/`END`：指定固定區間，系統自動追加 260 天暖機；優先於 `DAYS`
 - 首次執行 30 天約需 20-30 分鐘；一年區間全幣種約需 4-5 小時；快取於 `backtest/cache/`
-- 區間模式快取永久有效（歷史資料不變）；`--days` 模式每日更新
+- 區間模式快取永久有效（歷史資料不變）；`DAYS` 模式每日更新
 - 輸出 CSV：`backtest/results/{strategy}_{YYYYMMDD}.csv`
 - 無需 API Key（Binance 公開 REST API）
 
@@ -153,15 +174,30 @@ python backtest/run.py --strategy all --start 2025-06-04  # --end 預設今天
 
 ```bash
 # 開發模式（需先啟動後端）
-python -m app.main                           # 後端 :8000
-cd web/frontend && npm run dev               # 前端 :5173（proxy → :8000）
+make run                   # 後端 :8000（完整 Bot）
+make api                   # 後端 :8000（僅 API，不需 Telegram/Binance 金鑰）
+make dev                   # 前端 :5173（proxy → :8000）
 
 # 生產（build 後由 FastAPI serve）
-cd web/frontend && npm run build
-python -m app.main                           # http://localhost:8000
+make build                 # 前端 build
+make run                   # http://localhost:8000
+
+# Docker
+make up                    # build + 背景啟動
+make down                  # 停止
+make logs                  # 查看即時 log
+make logs-cf               # 查看 cloudflared log（取得外部 URL）
 ```
 
-- 儀表板文件：[docs/architecture/dashboard.md](docs/architecture/dashboard.md)
+**注意**：儀表板無 Mock 模式，`fetchData()` / `fetchHealth()` 直接呼叫後端 API，須確保後端已啟動。
+
+**圖表元件**：
+- `KlineChartDialog.vue` — 主要 K 線圖（lightweight-charts），支援 15m/1h/4h/1d 切換、EMA 15/30/45/60/200、成交量、即時更新、起漲 K 高亮
+- `ChartDialog.vue` — TradingView 免費 Widget（tv.js），EMA 均線由 TV 內建
+
+**外部存取**：`docker-compose.yml` 已內建 `cloudflared` service，`make up` 後自動建立公開 HTTPS 網址（臨時 URL，重啟 cloudflared 後會改變）。查看網址：`make logs-cf`
+
+- 儀表板完整文件：[docs/architecture/dashboard.md](docs/architecture/dashboard.md)
 - VSCode 需安裝 **Vue - Official**（`Vue.volar`）擴充以正確解析 `.vue` 檔案
 
 ---
