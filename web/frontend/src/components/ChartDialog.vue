@@ -48,7 +48,7 @@ function initWidget() {
   if (!chartRef.value || !(window as any).TradingView) return
   clearWidget()
   const tv = (window as any).TradingView
-  widget = new tv.widget({
+  const wid = new tv.widget({
     container_id: containerId,
     symbol: `BINANCE:${props.symbol}.P`,
     interval: '240',
@@ -57,14 +57,25 @@ function initWidget() {
     locale: 'en',
     toolbar_bg: '#1a1a2e',
     autosize: true,
+    timezone: "Asia/Taipei",
+    // 1. 為每一條 EMA 設定獨立的 uid
+    studies: [
+      { id: 'MAExp@tv-basicstudies', uid: "ema_15", inputs: { length: 15 } },
+      { id: 'MAExp@tv-basicstudies', uid: "ema_30", inputs: { length: 30 } },
+      { id: 'MAExp@tv-basicstudies', uid: "ema_45", inputs: { length: 45 } },
+      { id: 'MAExp@tv-basicstudies', uid: "ema_60", inputs: { length: 60 } },
+      { id: 'MAExp@tv-basicstudies', uid: "ema_200", inputs: { length: 200 } },
+    ],
+    // 2. 使用 studies_overrides 透過 uid 精準控制每條線的顏色
+    studies_overrides: {
+      "ema_15.plot.color": '#F97316',
+      "ema_30.plot.color": '#3B82F6',
+      "ema_45.plot.color": '#A855F7',
+      "ema_60.plot.color": '#EF4444',
+      "ema_200.plot.color":'#22C55E',
+    }
   })
-  ;(widget as any).onChartReady(() => {
-    const chart = (widget as any).activeChart()
-    chart.createStudy('Moving Average Exponential', false, false, [15])
-    chart.createStudy('Moving Average Exponential', false, false, [30])
-    chart.createStudy('Moving Average Exponential', false, false, [45])
-    chart.createStudy('Moving Average Exponential', false, false, [60])
-  })
+  console.log('TradingView widget initialized:', wid)
 }
 
 watch(() => props.open, async (isOpen) => {

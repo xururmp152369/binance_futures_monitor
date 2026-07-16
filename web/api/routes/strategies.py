@@ -1,5 +1,6 @@
 import time
-from fastapi import APIRouter, Query
+import httpx
+from fastapi import APIRouter, Query, HTTPException
 from app.setting import models
 from app.strategy.long_breakout import StrategyPhase
 from app.strategy.death_cross_short import DeathCrossPhase
@@ -191,3 +192,33 @@ def fibonacci(
         per_page=per_page,
         items=items[start : start + per_page],
     )
+
+
+@router.get("/chart/klines")
+async def chart_klines(
+    symbol: str = Query(...),
+    interval: str = Query("4h"),
+    limit: int = Query(500, ge=1, le=1000),
+):
+    url = "https://fapi.binance.com/fapi/v1/klines"
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(
+                url,
+                params={"symbol": symbol, "interval": interval, "limit": limit},
+                timeout=15,
+            )
+            resp.raise_for_status()
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+    return [
+        {
+            "time": int(k[0]) // 1000,
+            "open": float(k[1]),
+            "high": float(k[2]),
+            "low": float(k[3]),
+            "close": float(k[4]),
+            "volume": float(k[5]),
+        }
+        for k in resp.json()
+    ]

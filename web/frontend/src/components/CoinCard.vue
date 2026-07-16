@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import ChartDialog from './ChartDialog.vue'
+import KlineChartDialog from './KlineChartDialog.vue'
 import type { LongBreakoutCoin, DeathCrossCoin, FibonacciCoin } from '../types'
 
 const props = defineProps<{
@@ -9,6 +10,7 @@ const props = defineProps<{
 }>()
 
 const chartOpen = ref(false)
+const klineOpen = ref(false)
 
 function fmt(v: number | null | undefined, decimals = 2) {
   if (v == null) return '—'
@@ -149,12 +151,18 @@ const coinPhase = computed(() => {
     </div>
 
     <!-- Actions -->
-    <div class="px-4 pb-3 flex gap-2">
+    <div class="px-4 pb-3 flex gap-1.5">
       <button
-        @click="chartOpen = true"
+        @click="klineOpen = true"
         class="flex-1 text-xs py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded transition-colors"
       >
-        開啟線圖
+        K線圖
+      </button>
+      <button
+        @click="chartOpen = true"
+        class="text-xs px-2.5 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded border border-gray-700 transition-colors"
+      >
+        TV
       </button>
       <a
         :href="`https://www.binance.com/en/futures/${coin.symbol}`"
@@ -168,4 +176,11 @@ const coinPhase = computed(() => {
   </div>
 
   <ChartDialog :symbol="coin.symbol" :open="chartOpen" @close="chartOpen = false" />
+  <KlineChartDialog
+    :symbol="coin.symbol"
+    :open="klineOpen"
+    :current-price="coin.current_price"
+    :pump-candle-time="strategy === 'long_breakout' ? lb.trigger_time_ts : null"
+    @close="klineOpen = false"
+  />
 </template>
