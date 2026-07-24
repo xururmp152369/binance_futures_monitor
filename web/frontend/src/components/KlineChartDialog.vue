@@ -61,6 +61,7 @@ let emaLastValues: Map<number, number> = new Map()
 let allCandles: Kline[] = []
 let lastCandle: Kline | null = null
 let refreshTimer: ReturnType<typeof setInterval> | null = null
+let pricePrecision = 2
 
 function snapTo4h(ts: number): number {
   return Math.floor(ts / (4 * 3600)) * (4 * 3600)
@@ -76,17 +77,29 @@ function fmtLocalTime(ts: number): string {
   return `${yyyy}-${mm}-${dd} ${hh}:${mi}`
 }
 
+function detectPricePrecision(candles: Kline[]): number {
+  if (!candles.length) return 2
+  let detected = 0
+  for (const c of candles.slice(-30)) {
+    for (const price of [c.open, c.high, c.low, c.close]) {
+      const s = price.toString()
+      const dot = s.indexOf('.')
+      if (dot !== -1) detected = Math.max(detected, s.length - dot - 1)
+    }
+  }
+  const ref = candles[candles.length - 1].close
+  const floor = ref < 0.001 ? 8 : ref < 0.01 ? 6 : ref < 1 ? 4 : 2
+  return Math.min(Math.max(detected, floor), 8)
+}
+
 function fmtPrice(v: number | null | undefined): string {
   if (v == null) return '—'
-  if (Math.abs(v) >= 1000) return v.toLocaleString('en-US', { maximumFractionDigits: 2 })
-  return v.toFixed(Math.abs(v) >= 1 ? 2 : 6)
+  return v.toLocaleString('en-US', { minimumFractionDigits: pricePrecision, maximumFractionDigits: pricePrecision })
 }
 
 function fmtChange(v: number): string {
   const sign = v >= 0 ? '+' : '-'
-  const abs = Math.abs(v)
-  if (abs >= 1000) return sign + abs.toLocaleString('en-US', { maximumFractionDigits: 2 })
-  return sign + abs.toFixed(abs >= 1 ? 2 : 6)
+  return sign + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: pricePrecision, maximumFractionDigits: pricePrecision })
 }
 
 function calcEma(candles: Kline[], period: number): { time: UTCTimestamp; value: number }[] {
@@ -176,6 +189,10 @@ async function initChart() {
   }
   if (!chartRef.value || !allCandles.length) { loading.value = false; return }
 
+  pricePrecision = detectPricePrecision(allCandles)
+  const minMove = parseFloat('1e-' + pricePrecision)
+  const priceFormat = { type: 'price' as const, precision: pricePrecision, minMove }
+
   chart = createChart(chartRef.value, {
     autoSize: true,
     layout: { background: { color: '#0f172a' }, textColor: '#94a3b8' },
@@ -214,6 +231,7 @@ async function initChart() {
     borderVisible: false,
     wickUpColor: '#22c55e',
     wickDownColor: '#ef4444',
+    priceFormat,
   })
   candleSeries.setData(allCandles.map(c => ({
     time: c.time as UTCTimestamp,
@@ -255,6 +273,7 @@ async function initChart() {
       priceLineVisible: false,
       lastValueVisible: false,
       crosshairMarkerVisible: false,
+      priceFormat,
     })
     s.setData(emaData)
     emaSeries.push({ period, series: s })
